@@ -1,0 +1,150 @@
+name: Build UE_MOD (Cross-Platform)
+
+on:
+  workflow_dispatch:
+    inputs:
+      custom_version:
+        description: '手動指定版本號 (例如 1.1.0，留空則自動遞增末碼)'
+        type: string
+        required: false
+        default: ''
+      create_release:
+        description: '是否建立 Release'
+        type: boolean
+        default: true
+
+env:
+  CARGO_TERM_COLOR: always
+  BINARY_NAME: UE_L10nTool
+
+jobs:
+
+  build:
+    name: Build ${{ matrix.os_name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            os_name: windows
+            ext: .exe
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            os_name: linux
+            ext: ""
+          - os: macos-15
+            target: x86_64-apple-darwin
+            os_name: macos
+            ext: ""
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Linux dependencies
+        if: matrix.os_name == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libglib2.0-dev libxcb-shape0-dev libxcb-xfixes0-dev libfontconfig1-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }} -p gui
+
+      - name: Prepare artifact
+        shell: bash
+        run: |
+          BIN="target/${{ matrix.target }}/release/${{ env.BINARY_NAME }}${{ matrix.ext }}"
+          ARTIFACT_DIR="artifact"
+          mkdir -p "$ARTIFACT_DIR"
+          cp "$BIN" "$ARTIFACT_DIR/"
+          echo "UE Mod Tool - ${{ matrix.os_name }} Build" > "$ARTIFACT_DIR/README.txt"
+          echo "ARTIFACT_DIR=$ARTIFACT_DIR" >> $GITHUB_ENV
+          echo "ARTIFACT_NAME=${{ env.BINARY_NAME }}-${{ matrix.os_name }}" >> $GITHUB_ENV
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          path: artifact/
+          retention-days: 7
+
+  # ────────────────────────────────────────────────────────────
+  # 階段二：正式打包並發布 Release（僅在手動點擊且編譯全數成功後執行）
+  # ────────────────────────────────────────────────────────────
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    # 安全防線：必須編譯成功，且勾選了建立 Release 才執行
+    if: success() && inputs.create_release == true
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0 # 抓取完整歷史以計算最新 Tag
+
+      # 1. 計算最終版本號 (留空自動遞增 / 有填則依填寫為主)
+      - name: Determine Version Tag
+        id: version_logic
+        shell: bash
+        run: |
+          USER_INPUT="${{ github.event.inputs.custom_version }}"
+          
+          if [ ! -z "$USER_INPUT" ]; then
+            # 容錯：移除可能誤打的 v
+            CLEAN_INPUT=$(echo "$USER_INPUT" | sed 's/^v//')
+            FINAL_TAG="v$CLEAN_INPUT"
+          else
+            # 抓取目前最新 Tag，若完全沒有則從 v1.0.0 開始
+            LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v1.0.0")
+            
+            if [ "$LATEST_TAG" = "v1.0.0" ] && ! git tag -l "v1.0.0" >/dev/null; then
+              FINAL_TAG="v1.0.0"
+            else
+              VERSION_STR=${LATEST_TAG#v}
+              IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION_STR"
+              NEXT_PATCH=$((PATCH + 1))
+              FINAL_TAG="v$MAJOR.$MINOR.$NEXT_PATCH"
+            fi
+          fi
+          echo "最終決定的發布版本號: $FINAL_TAG"
+          echo "FINAL_TAG=$FINAL_TAG" >> $GITHUB_ENV
+
+      # 2. 下載所有編譯好的各平台產出物
+      - name: Download all artifacts
+        uses: actions/download-artifact@v6
+        with:
+          path: artifacts/
+
+      # 3. 壓縮成各自的 ZIP 檔
+      - name: Zip artifacts
+        run: |
+          cd artifacts
+          for dir in */; do
+            dir=${dir%/}
+            zip -jr "${dir}.zip" "$dir"/
+          done
+
+      # 4. 建立正式 Release（GitHub 會在此時自動補打 Git Tag 到儲存庫中）
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ env.FINAL_TAG }}
+          name: "UE Mod Tool ${{ env.FINAL_TAG }}"
+          files: artifacts/*.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
