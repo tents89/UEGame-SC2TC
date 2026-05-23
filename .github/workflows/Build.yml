@@ -69,7 +69,10 @@ jobs:
           ARTIFACT_DIR="artifact"
           mkdir -p "$ARTIFACT_DIR"
           cp "$BIN" "$ARTIFACT_DIR/"
-          echo "UE Mod Tool - ${{ matrix.os_name }} Build" > "$ARTIFACT_DIR/README.txt"
+          
+          # 將根目錄的授權檔案複製到打包資料夾中
+          cp LICENSE-MIT LICENSE-APACHE "$ARTIFACT_DIR/"
+          
           echo "ARTIFACT_DIR=$ARTIFACT_DIR" >> $GITHUB_ENV
           echo "ARTIFACT_NAME=${{ env.BINARY_NAME }}-${{ matrix.os_name }}" >> $GITHUB_ENV
 
@@ -124,7 +127,7 @@ jobs:
           echo "最終決定的發布版本號: $FINAL_TAG"
           echo "FINAL_TAG=$FINAL_TAG" >> $GITHUB_ENV
 
-      # 2. 下載所有編譯好的各平台產出物
+      # 2. 下載所有編譯好的各平台產出物（此時資料夾內已有主程式與授權檔）
       - name: Download all artifacts
         uses: actions/download-artifact@v6
         with:
@@ -144,7 +147,7 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ env.FINAL_TAG }}
-          name: "UE Mod Tool ${{ env.FINAL_TAG }}"
+          name: "UE_L10nTool ${{ env.FINAL_TAG }}"
           files: artifacts/*.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
