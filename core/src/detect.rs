@@ -10,6 +10,15 @@ pub struct DetectResult {
 }
 
 pub fn detect_ue_version(game_dir: &Path) -> Result<DetectResult, String> {
+    detect_ue_version_with_hint(game_dir, None)
+}
+
+/// 與 `detect_ue_version` 相同，但允許呼叫端傳入已找到的 Shipping EXE，
+/// 避免重複走訪整個遊戲目錄。
+pub fn detect_ue_version_with_hint(
+    game_dir: &Path,
+    shipping_exe_hint: Option<&Path>,
+) -> Result<DetectResult, String> {
     let is_iostore = find_first_utoc(game_dir).is_some();
 
     // 1. 確認目錄中存在 .pak 或 .utoc，否則視為無效遊戲目錄
@@ -20,7 +29,11 @@ pub fn detect_ue_version(game_dir: &Path) -> Result<DetectResult, String> {
     let mode = if is_iostore { BuildMode::IoStore } else { BuildMode::Pak };
 
     // 2. 從 EXE 的 VS_VERSIONINFO 讀取精確版本
-    if let Some(mut result) = try_read_exe_version(game_dir) {
+    let exe_result = match shipping_exe_hint {
+        Some(exe) => try_read_exe_hint(exe),
+        None      => try_read_exe_version(game_dir),
+    };
+    if let Some(mut result) = exe_result {
         result.mode = mode;
         return Ok(result);
     }
@@ -33,6 +46,19 @@ pub fn detect_ue_version(game_dir: &Path) -> Result<DetectResult, String> {
 
     // 找不到 Shipping.exe 且無 Build.version → 回傳錯誤
     Err("找不到 Shipping.exe，無法判斷遊戲版本。".to_string())
+}
+
+fn try_read_exe_hint(exe: &Path) -> Option<DetectResult> {
+    let (major, minor) = scan_exe_with_pelite(exe)?;
+    let version = UEVersion::from_major_minor(major, minor)?;
+    Some(DetectResult {
+        mode: BuildMode::Pak, // 呼叫端會覆寫
+        version,
+        evidence: format!(
+            "從 EXE ({}) 的 VS_VERSIONINFO 偵測到版本",
+            exe.file_name().unwrap_or_default().to_string_lossy()
+        ),
+    })
 }
 
 fn try_read_exe_version(game_dir: &Path) -> Option<DetectResult> {
@@ -164,24 +190,13 @@ fn try_read_build_version(game_dir: &Path) -> Option<DetectResult> {
 }
 
 fn parse_build_version(content: &str) -> Option<DetectResult> {
-    let major = extract_json_int(content, "MajorVersion")?;
-    let minor = extract_json_int(content, "MinorVersion")?;
+    let v: serde_json::Value = serde_json::from_str(content).ok()?;
+    let major = v.get("MajorVersion")?.as_i64()? as i32;
+    let minor = v.get("MinorVersion")?.as_i64()? as i32;
     let version = UEVersion::from_major_minor(major, minor)?;
     Some(DetectResult {
         mode: BuildMode::Pak, // 呼叫端會覆寫
         version,
         evidence: format!("Build.version: {}.{}", major, minor),
     })
-}
-
-fn extract_json_int(content: &str, key: &str) -> Option<i32> {
-    let pattern = format!("\"{}\"", key);
-    let pos = content.find(&pattern)?;
-    let rest = &content[pos + pattern.len()..];
-    let colon_pos = rest.find(':')?;
-    let value_str = rest[colon_pos + 1..].trim_start();
-    let end = value_str
-        .find(|c: char| !c.is_ascii_digit() && c != '-')
-        .unwrap_or(value_str.len());
-    value_str[..end].trim().parse().ok()
 }

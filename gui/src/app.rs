@@ -161,7 +161,7 @@ impl App {
 
         self.push_log(LogLevel::Info, "開始掃描...");
 
-        let detect = match detect_ue_version(&game_dir) {
+        let detect = match detect_ue_version_with_hint(&game_dir, self.shipping_exe_path.as_deref()) {
             Ok(d) => d,
             Err(e) => {
                 self.scan_status = format!("錯誤：{}", e);

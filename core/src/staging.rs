@@ -12,17 +12,27 @@ pub struct ModBuilder {
     pub aes_key: Option<String>,
 }
 
+// 工作目錄 RAII 守衛：build 流程中途失敗時（`?` 或 panic）仍會清理 TEMP 目錄
+struct WorkDirGuard(PathBuf);
+
+impl Drop for WorkDirGuard {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
 impl ModBuilder {
-    fn prepare_work_dir(&self) -> Result<PathBuf> {
+    fn prepare_work_dir(&self) -> Result<WorkDirGuard> {
         let work_dir = std::env::temp_dir()
             .join(format!("ue_mod_{}", self.config.mod_name));
         let _ = fs::remove_dir_all(&work_dir);
         fs::create_dir_all(&work_dir)?;
-        Ok(work_dir)
+        Ok(WorkDirGuard(work_dir))
     }
 
     pub fn build(&self, log: &mut Vec<String>) -> Result<PathBuf> {
-        let work_dir = self.prepare_work_dir()?;
+        let work_dir_guard = self.prepare_work_dir()?;
+        let work_dir = work_dir_guard.0.as_path();
 
         // 因 BuildTarget 現在是 Copy，不需要 .clone()
         let target = self.config.target;
@@ -30,19 +40,19 @@ impl ModBuilder {
         if matches!(target, BuildTarget::All | BuildTarget::LocresOnly) {
             if !self.staging.locres_edits.is_empty() {
                 log.push(format!("處理 {} 個 locres 檔案...", self.staging.locres_edits.len()));
-                self.apply_locres_edits(&work_dir, log)?;
+                self.apply_locres_edits(work_dir, log)?;
             }
         }
 
         if matches!(target, BuildTarget::All | BuildTarget::FontsOnly) {
             if !self.staging.font_replacements.is_empty() {
                 log.push(format!("處理 {} 個字體替換...", self.staging.font_replacements.len()));
-                self.apply_font_replacements(&work_dir, log)?;
+                self.apply_font_replacements(work_dir, log)?;
             }
         }
 
-        let output_path = self.pack(&work_dir, log)?;
-        let _ = fs::remove_dir_all(&work_dir);
+        let output_path = self.pack(work_dir, log)?;
+        // 成功路徑：work_dir_guard 在離開 scope 時自動清除
 
         log.push(format!("完成: {}", output_path.display()));
         Ok(output_path)
@@ -55,20 +65,18 @@ impl ModBuilder {
                 continue;
             }
 
-            let source_pak = self
-                .find_source_pak(pak_path)
-                .with_context(|| format!("找不到包含 {} 的 pak", pak_path))?;
-
             let extracted_path =
                 work_dir.join(pak_path.replace('/', std::path::MAIN_SEPARATOR_STR));
 
-            crate::locres::extract_locres_to_file(
-                source_pak,
+            let source_pak = self
+                .extract_first_match(pak_path, &extracted_path)
+                .with_context(|| format!("找不到包含 {} 的 pak", pak_path))?;
+
+            log.push(format!(
+                "  處理: {} (來源: {})",
                 pak_path,
-                &extracted_path,
-                self.aes_key.as_deref(),
-            )?;
-            log.push(format!("  處理: {}", pak_path));
+                source_pak.file_name().unwrap_or_default().to_string_lossy()
+            ));
 
             write_locres(entries, &extracted_path, &extracted_path)?;
             log.push(format!("  寫入 {} 處修改", modified_count));
@@ -88,17 +96,38 @@ impl ModBuilder {
         Ok(())
     }
 
-    fn find_source_pak(&self, _internal_path: &str) -> Option<&Path> {
-        self.source_paks
-            .iter()
-            .find(|p| {
-                p.file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .starts_with("pakchunk0")
-            })
-            .or_else(|| self.source_paks.first())
-            .map(PathBuf::as_path)
+    /// 依序嘗試每個來源 PAK，回傳第一個成功提取到 `internal_path` 的 PAK。
+    /// pakchunk0 優先（通常為主資源 PAK），其餘按 source_paks 順序。
+    fn extract_first_match(&self, internal_path: &str, output: &Path) -> Option<&Path> {
+        let chunk0_idx = self.source_paks.iter().position(|p| {
+            p.file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_ascii_lowercase()
+                .starts_with("pakchunk0")
+        });
+
+        let aes = self.aes_key.as_deref();
+        let try_extract = |p: &Path| -> bool {
+            crate::locres::extract_locres_to_file(p, internal_path, output, aes).is_ok()
+        };
+
+        if let Some(i) = chunk0_idx {
+            let p = self.source_paks[i].as_path();
+            if try_extract(p) {
+                return Some(p);
+            }
+        }
+        for (i, candidate) in self.source_paks.iter().enumerate() {
+            if Some(i) == chunk0_idx {
+                continue;
+            }
+            let p = candidate.as_path();
+            if try_extract(p) {
+                return Some(p);
+            }
+        }
+        None
     }
 
     fn pack(&self, work_dir: &Path, log: &mut Vec<String>) -> Result<PathBuf> {
@@ -121,7 +150,6 @@ impl ModBuilder {
             "V3"  => repak::Version::V3,
             "V4"  => repak::Version::V4,
             "V5"  => repak::Version::V5,
-            "V6"  => repak::Version::V6,
             "V7"  => repak::Version::V7,
             "V8A" => repak::Version::V8A,
             "V8B" => repak::Version::V8B,

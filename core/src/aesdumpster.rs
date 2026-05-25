@@ -9,7 +9,6 @@ use std::path::Path;
 pub struct KeyDumpster {
     pub key_vector: Vec<String>,
     pub key_entropies: Vec<f64>,
-    pub most_likely_indices: Vec<usize>,
 
     key_patterns: Vec<&'static str>,
     false_positives: Vec<&'static str>,
@@ -27,7 +26,6 @@ impl KeyDumpster {
         Self {
             key_vector: Vec::new(),
             key_entropies: Vec::new(),
-            most_likely_indices: Vec::new(),
             key_patterns: vec![
                 "C7 ? ? ? ? ? ? C7 ? ? ? ? ? ? C7 ? ? ? ? ? ? C7 ? ? ? ? ? ? ? ? ? ? C7 ? ? ? ? ? ? C7 ? ? ? ? ? ? C7 ? ? ? ? ? ? C7 ? ? ? ? ? ?",
                 "C7 ? ? ? ? ? C7 ? ? ? ? ? ? C7 ? ? ? ? ? ? C7 ? ? ? ? ? ? C7 ? ? ? ? ? ? C7 ? ? ? ? ? ? C7 ? ? ? ? ? ? C7 ? ? ? ? ? ?",
@@ -81,18 +79,9 @@ impl KeyDumpster {
 
         self.key_entropies = self.key_entropy_generator();
 
-        if self.key_entropies.is_empty() || self.key_vector.is_empty() {
-            return false;
-        }
-
-        // 優化點：移除 `found_any` 中間變數，直接利用回傳值
-        let (max_val, indices) = find_max_elements(&self.key_entropies);
-        if max_val.is_finite() && !indices.is_empty() {
-            self.most_likely_indices = indices;
-            true
-        } else {
-            false
-        }
+        // 只需確認確實有候選 key 與對應 entropy；後續 get_most_likely_key
+        // 會自行掃描 entropies 並排除 false_positives。
+        !self.key_vector.is_empty() && !self.key_entropies.is_empty()
     }
 
     pub fn get_most_likely_key(&self) -> Option<String> {
@@ -150,21 +139,6 @@ fn calc_entropy(s: &str) -> f64 {
             -p * p.log2()
         })
         .sum()
-}
-
-fn find_max_elements(v: &[f64]) -> (f64, Vec<usize>) {
-    let mut indices = Vec::new();
-    let mut current_max = f64::NEG_INFINITY;
-    for (i, &val) in v.iter().enumerate() {
-        if val > current_max {
-            current_max = val;
-            indices.clear();
-        }
-        if val == current_max {
-            indices.push(i);
-        }
-    }
-    (current_max, indices)
 }
 
 fn parse_signature(pattern: &str) -> Vec<Option<u8>> {

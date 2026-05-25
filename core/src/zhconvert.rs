@@ -110,9 +110,15 @@ fn convert_batch(texts: &[&str], converter: ZhConverter) -> Result<Vec<String>> 
         .collect();
 
     if results.len() != texts.len() {
-        // 寬鬆處理：盡量對應，多退少補
+        // 分隔符被破壞或服務回傳異常：寬鬆對齊，避免整批 panic。
+        // 但須讓使用者知道有條目可能未被正確翻譯，避免靜默吃資料。
+        eprintln!(
+            "[zhconvert] 警告：本批回傳 {} 條 vs. 送出 {} 條，對齊不一致，將以空字串補齊缺失部分。",
+            results.len(),
+            texts.len()
+        );
         let mut aligned = results;
-        aligned.resize_with(texts.len(), || String::new());
+        aligned.resize_with(texts.len(), String::new);
         return Ok(aligned);
     }
 
@@ -146,12 +152,13 @@ pub fn convert_entries(
     }
 
     let mut converted_count = 0;
+    let batch_total = total.div_ceil(BATCH_SIZE);
 
     for (batch_idx, chunk) in targets.chunks(BATCH_SIZE).enumerate() {
         let texts: Vec<&str> = chunk.iter().map(|&i| entries[i].value.as_str()).collect();
 
         let results = convert_batch(&texts, converter)
-            .with_context(|| format!("第 {} 批次（共 {} 批）轉換失敗", batch_idx + 1, targets.chunks(BATCH_SIZE).count()))?;
+            .with_context(|| format!("第 {} 批次（共 {} 批）轉換失敗", batch_idx + 1, batch_total))?;
 
         for (&entry_idx, new_val) in chunk.iter().zip(results.iter()) {
             let entry = &mut entries[entry_idx];

@@ -85,8 +85,8 @@ impl UEVersion {
     pub fn from_major_minor(major: i32, minor: i32) -> Option<Self> {
         let all = Self::all();
         match major {
-            4 if minor <= 27 => Some(all[minor as usize]),
-            5 if minor <= 7  => Some(all[28 + minor as usize]),
+            4 if (0..=27).contains(&minor) => Some(all[minor as usize]),
+            5 if (0..=9).contains(&minor)  => Some(all[28 + minor as usize]),
             _ => None,
         }
     }
@@ -108,7 +108,7 @@ impl UEVersion {
             UEVersion::UE4_20, UEVersion::UE4_21, UEVersion::UE4_22, UEVersion::UE4_23, UEVersion::UE4_24,
             UEVersion::UE4_25, UEVersion::UE4_26, UEVersion::UE4_27,
             UEVersion::UE5_0,  UEVersion::UE5_1,  UEVersion::UE5_2, UEVersion::UE5_3, UEVersion::UE5_4,
-            UEVersion::UE5_5,  UEVersion::UE5_6,  UEVersion::UE5_7, UEVersion::UE5_8,
+            UEVersion::UE5_5,  UEVersion::UE5_6,  UEVersion::UE5_7, UEVersion::UE5_8, UEVersion::UE5_9,
         ]
     }
 

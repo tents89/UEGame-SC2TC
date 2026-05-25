@@ -67,9 +67,9 @@ impl Default for LocresEditorState {
 }
 
 impl LocresEditorState {
-    pub fn open_locres(&mut self, path: &str, pak: &PathBuf, aes_key: &str) {
+    pub fn open_locres(&mut self, path: &str, pak: &std::path::Path, aes_key: &str) {
         self.current_path = Some(path.to_string());
-        self.current_pak = Some(pak.clone());
+        self.current_pak = Some(pak.to_path_buf());
         self.entries.clear();
         self.is_loaded = false;
         self.status = "正在讀取 locres...".to_string();

@@ -105,7 +105,7 @@ pub fn show_build_panel(
             _ => BuildMode::Pak,
         }
     } else {
-        detected_mode.clone()
+        *detected_mode
     };
 
     ui.horizontal(|ui| {
@@ -131,7 +131,7 @@ pub fn show_build_panel(
 
         if let Some(target) = trigger_build {
             let config = BuildConfig {
-                mode: actual_mode.clone(),
+                mode: actual_mode,
                 version: actual_version,
                 output_dir: output_dir.clone().unwrap(),
                 mod_name: mod_name.clone(),

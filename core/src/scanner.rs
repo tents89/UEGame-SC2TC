@@ -55,17 +55,17 @@ fn is_target_file(lower_path: &str) -> bool {
 }
 
 fn is_engine_path(lower_path: &str) -> bool {
-    // 優化點：PAK 內部路徑統一使用 '/'，原版的 `engine\\` 判斷永遠不會成立，
-    // 已移除。此函式只需判斷 '/' 版本。
-    lower_path.contains("engine/")
+    // PAK 內部路徑統一使用 '/'。需精準比對「engine」目錄而非單純子字串，
+    // 否則 `engineering/` 等路徑會被誤判排除。
+    lower_path.starts_with("engine/") || lower_path.contains("/engine/")
 }
 
 fn scan_pak_utoc(container_path: &Path, aes_key_hex: Option<&str>) -> Result<Vec<PakEntry>> {
     let mut config = retoc::Config::default();
     if let Some(key_hex) = aes_key_hex {
-        if let Ok(k) = std::str::FromStr::from_str(key_hex) {
-            config.aes_keys.insert(retoc::FGuid::default(), k);
-        }
+        let k = std::str::FromStr::from_str(key_hex)
+            .map_err(|_| anyhow::anyhow!("AES Key 格式錯誤 (IoStore): {}", key_hex))?;
+        config.aes_keys.insert(retoc::FGuid::default(), k);
     }
 
     let store = retoc::iostore::open(container_path, std::sync::Arc::new(config))
@@ -101,12 +101,12 @@ fn scan_pak_pak(container_path: &Path, aes_key_hex: Option<&str>) -> Result<Vec<
     let mut builder = repak::PakBuilder::new();
     if let Some(key_hex) = aes_key_hex {
         let clean_hex = key_hex.trim_start_matches("0x");
-        if let Ok(key_bytes) = hex::decode(clean_hex) {
-            use aes::cipher::KeyInit;
-            if let Ok(aes_key) = aes::Aes256::new_from_slice(&key_bytes) {
-                builder = builder.key(aes_key);
-            }
-        }
+        let key_bytes = hex::decode(clean_hex)
+            .map_err(|e| anyhow::anyhow!("AES Key hex 解碼失敗: {}", e))?;
+        use aes::cipher::KeyInit;
+        let aes_key = aes::Aes256::new_from_slice(&key_bytes)
+            .map_err(|_| anyhow::anyhow!("AES Key 長度錯誤 (需 32 bytes / 64 hex 字元)"))?;
+        builder = builder.key(aes_key);
     }
 
     let pak_reader = builder

@@ -1,6 +1,7 @@
 // release build 隱藏 Windows console 視窗（避免出現黑底命令列）；
 // debug build 保留 console 以便檢視 eprintln 偵錯輸出。
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use eframe::egui;
 
 mod app;

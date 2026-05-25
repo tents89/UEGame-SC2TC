@@ -2,10 +2,35 @@ use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::fs;
 use std::io::{BufWriter, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::models::LocresEntry;
 use locres_rs::locres::{self as locres_api};
+
+// ── 暫存檔 RAII 守衛 ──────────────────────────────────────────────────────────
+// 確保即使 parse/write 過程中 `?` 提前 return 或 panic，臨時檔仍會被清理。
+struct TempFileGuard(PathBuf);
+
+impl TempFileGuard {
+    fn new(prefix: &str) -> Self {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let pid = std::process::id();
+        let path = std::env::temp_dir().join(format!("{}_{}_{}.tmp", prefix, pid, counter));
+        Self(path)
+    }
+
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TempFileGuard {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
 
 // ── 容器讀取 ──────────────────────────────────────────────────────────────────
 
@@ -23,9 +48,9 @@ pub fn read_raw_file_from_container(
     if ext == "utoc" {
         let mut config = retoc::Config::default();
         if let Some(key_hex) = aes_key_hex {
-            if let Ok(k) = std::str::FromStr::from_str(key_hex) {
-                config.aes_keys.insert(retoc::FGuid::default(), k);
-            }
+            let k = std::str::FromStr::from_str(key_hex)
+                .map_err(|_| anyhow::anyhow!("AES Key 格式錯誤 (IoStore): {}", key_hex))?;
+            config.aes_keys.insert(retoc::FGuid::default(), k);
         }
         let store = retoc::iostore::open(container, std::sync::Arc::new(config))
             .with_context(|| format!("無法打開 IoStore: {}", container.display()))?;
@@ -47,12 +72,12 @@ pub fn read_raw_file_from_container(
         let mut builder = repak::PakBuilder::new();
         if let Some(key_hex) = aes_key_hex {
             let clean_hex = key_hex.trim_start_matches("0x");
-            if let Ok(key_bytes) = hex::decode(clean_hex) {
-                use aes::cipher::KeyInit;
-                if let Ok(aes_key) = aes::Aes256::new_from_slice(&key_bytes) {
-                    builder = builder.key(aes_key);
-                }
-            }
+            let key_bytes = hex::decode(clean_hex)
+                .map_err(|e| anyhow::anyhow!("AES Key hex 解碼失敗: {}", e))?;
+            use aes::cipher::KeyInit;
+            let aes_key = aes::Aes256::new_from_slice(&key_bytes)
+                .map_err(|_| anyhow::anyhow!("AES Key 長度錯誤 (需 32 bytes / 64 hex 字元)"))?;
+            builder = builder.key(aes_key);
         }
 
         let pak_reader = builder
@@ -85,17 +110,10 @@ pub fn read_locres_from_pak(
 ) -> Result<Vec<LocresEntry>> {
     let data = read_raw_file_from_container(container, internal_path, aes_key_hex)?;
 
-    // 優化點：使用 SystemTime 毫秒 + unwrap_or_default 避免 panic
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
-    let temp_path = std::env::temp_dir().join(format!("ue_mod_locres_{}.tmp", ts));
-
-    std::fs::write(&temp_path, &data)?;
-    let result = parse_locres(&temp_path);
-    let _ = std::fs::remove_file(&temp_path);
-    result
+    // RAII：離開作用域時自動清除暫存檔，避免 panic / 提前 return 殘留
+    let guard = TempFileGuard::new("ue_mod_locres");
+    std::fs::write(guard.path(), &data)?;
+    parse_locres(guard.path())
 }
 
 pub fn extract_locres_to_file(
