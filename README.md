@@ -178,5 +178,5 @@ cargo build --release -p gui
 This project is open-sourced under the MIT, APACHE2.0 License - see the LICENSE file for details.
 
 ```
- 免責聲明：本工具僅供學術研究。
+ 免責聲明：本工具僅供學術研究，與 Epic 公司無任何關聯。
 ```
