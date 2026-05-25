@@ -132,9 +132,20 @@ cargo build --release -p gui
 ```
 
 編譯完成後，執行檔將產生於 `target/release/` 目錄下：
-* Windows: `target/release/UE_L10nTool.exe`
+* Windows: `target/release/UE_L10nTool.exe`（已隱藏 console 黑窗）
 * macOS / Linux: `target/release/UE_L10nTool`
 
+> *macOS 提示：執行檔可直接執行；若需要 Dock 圖示與檔案關聯，請另以 [`cargo-bundle`](https://github.com/burtonageo/cargo-bundle) 打包成 `.app`（本專案未提供官方 bundle 設定）。*
+
+### 3. 啟動 Log 位置
+
+工具啟動時的字型載入訊息會寫入下列檔案：
+
+| 平台 | 檔案路徑 |
+|------|----------|
+| Windows | `%APPDATA%\UE_L10nTool\startup.log` |
+| macOS   | `~/Library/Application Support/UE_L10nTool/startup.log` |
+| Linux   | `${XDG_DATA_HOME:-~/.local/share}/UE_L10nTool/startup.log` |
 
 ```
 
