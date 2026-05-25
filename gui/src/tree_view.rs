@@ -8,7 +8,6 @@ pub struct TreeViewState {
     pub selected_path: Option<String>,
     pub multi_selected: HashSet<String>,
     pub expanded: HashSet<String>,
-    pub context_menu_path: Option<String>,
     pub filter: String,
 
     drag_start: Option<Pos2>,
@@ -16,14 +15,6 @@ pub struct TreeViewState {
 }
 
 impl TreeViewState {
-    pub fn init_expand(&mut self, nodes: &[TreeNode]) {
-        for node in nodes {
-            if let TreeNode::Dir { name, .. } = node {
-                self.expanded.insert(name.clone());
-            }
-        }
-    }
-
     pub fn is_selected(&self, path: &str) -> bool {
         self.selected_path.as_deref() == Some(path) || self.multi_selected.contains(path)
     }

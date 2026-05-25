@@ -6,7 +6,6 @@ use ue_mod_core::staging::ModBuilder;
 #[derive(Default)]
 pub struct BuildPanelState {
     pub is_building: bool,
-    pub build_log: Vec<String>,
     pub last_output: Option<PathBuf>,
     pub game_name: String,
 }
