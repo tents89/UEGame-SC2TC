@@ -12,7 +12,9 @@ csv = "1"
 rayon = { workspace = true }
 locres-rs = "1.0.1"
 pelite = "0.10"
-reqwest = { version = "0.13", features = ["json", "form", "blocking"] }
+# 使用純 Rust 的 rustls 作為 TLS 後端，避免 Linux 需安裝 OpenSSL 開發包。
+# Windows/macOS 上同樣零系統依賴。
+reqwest = { version = "0.13.3", default-features = false, features = ["json", "form", "blocking", "rustls"] }
 opencc-rust = { git = "https://github.com/doggy8088/opencc-rust" }
 repak = { git = "https://github.com/trumank/repak", features = ["oodle", "encryption"] }
 retoc = { git = "https://github.com/trumank/retoc" }

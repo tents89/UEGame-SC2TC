@@ -3,11 +3,58 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use eframe::egui;
+use std::io::Write;
+use std::path::PathBuf;
 
 mod app;
 mod tree_view;
 mod locres_editor;
 mod build_panel;
+
+// ── 跨平台啟動 log ───────────────────────────────────────────────────────────
+// release Windows 沒有 console，eprintln! 會被吃掉；故同步寫一份 log 檔到
+// 使用者資料目錄，方便回報問題時提供。
+
+fn user_data_dir() -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        std::env::var_os("APPDATA").map(PathBuf::from)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::env::var_os("HOME")
+            .map(|h| PathBuf::from(h).join("Library").join("Application Support"))
+    }
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+    {
+        if let Some(d) = std::env::var_os("XDG_DATA_HOME") {
+            Some(PathBuf::from(d))
+        } else {
+            std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local").join("share"))
+        }
+    }
+}
+
+fn log_file_path() -> Option<PathBuf> {
+    let dir = user_data_dir()?.join("UE_L10nTool");
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir.join("startup.log"))
+}
+
+fn startup_log(msg: &str) {
+    // terminal 啟動時仍可看到（macOS / Linux / Windows debug）
+    eprintln!("{}", msg);
+
+    if let Some(path) = log_file_path() {
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let _ = writeln!(f, "[{}] {}", ts, msg);
+        }
+    }
+}
 
 fn main() -> eframe::Result<()> {
     let mut viewport = egui::ViewportBuilder::default()
@@ -87,7 +134,7 @@ fn load_icon() -> Option<egui::IconData> {
                 if let Ok(img) = image::load_from_memory(&bytes) {
                     let img = img.into_rgba8();
                     let (width, height) = img.dimensions();
-                    eprintln!("[icon] 執行期載入: {}", path.display());
+                    startup_log(&format!("[icon] 執行期載入: {}", path.display()));
                     return Some(egui::IconData {
                         rgba: img.into_raw(),
                         width,
@@ -98,7 +145,7 @@ fn load_icon() -> Option<egui::IconData> {
         }
     }
 
-    eprintln!("[icon] 找不到圖示，視窗將使用預設圖示");
+    startup_log("[icon] 找不到圖示，視窗將使用預設圖示");
     None
 }
 
@@ -156,11 +203,11 @@ fn system_font_candidates() -> Vec<std::path::PathBuf> {
 fn load_system_cjk_font() -> Option<Vec<u8>> {
     for path in system_font_candidates() {
         if let Ok(data) = std::fs::read(&path) {
-            eprintln!("[font] 載入: {}", path.display());
+            startup_log(&format!("[font] 載入: {}", path.display()));
             return Some(data);
         }
     }
-    eprintln!("[font] 找不到系統 CJK 字體，CJK 字元可能顯示為方塊");
+    startup_log("[font] 找不到系統 CJK 字體，CJK 字元可能顯示為方塊");
     None
 }
 

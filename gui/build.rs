@@ -33,11 +33,13 @@ fn main() {
 
     match target_os.as_str() {
         // Windows：用 winres 嵌入 .ico 到 .exe 檔案資源中
+        // winres crate 僅在 host = Windows 時可用（由 Cargo.toml 的 target-specific 依賴控制）
+        #[cfg(windows)]
         "windows" => {
             if ico_path.is_file() {
                 let ico_str = ico_path.to_str().unwrap();
                 println!("cargo:rerun-if-changed={}", ico_str);
-                
+
                 let mut res = winres::WindowsResource::new();
                 res.set_icon(ico_str);
                 if let Err(e) = res.compile() {
