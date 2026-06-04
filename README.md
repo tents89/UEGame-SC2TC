@@ -106,15 +106,15 @@
 
 1. **打包模組**：建置頁面中的分頁提供打包外部檔案，取代繁瑣操作。
 > [!NOTE]
-> 來源資料夾：如果你要打包的檔案: `F:/YourMod/GameName/Content/Localization/Game/en/Game.locres`
+> 來源資料夾：要打包檔案 `F:/YourMod/GameName/Content/Localization/Game/en/Game.locres`
 > 
-> 請指到"YourMod"即可，不要選到GameName
+> 請選擇"YourMod"即可，不要選到GameName。
 
 2. **進階模式**：可以在關於頁面中啟用進階模式，本模式僅供探索與解包，不提供製作功能。
 > [!NOTE]
 > 模式開關後，請重新啟動程式避免任何問題。
 
-> #### 進階模式的外部篩選功能（請自己記錄）
+> ### 進階模式的外部篩選功能（請自己記錄並命名為 .json）
 >
 >* **Key 值規範**：不分大小寫（例如：`path` / `Path` / `PATH`）。
 >* **支援三種 JSON 寫法**：

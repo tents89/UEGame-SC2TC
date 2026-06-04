@@ -10,34 +10,16 @@ mod app;
 mod tree_view;
 mod locres_editor;
 mod build_panel;
+mod dev_mode;
 
 // ── 跨平台啟動 log ───────────────────────────────────────────────────────────
 // release Windows 沒有 console，eprintln! 會被吃掉；故同步寫一份 log 檔到
-// 使用者資料目錄，方便回報問題時提供。
-
-fn user_data_dir() -> Option<PathBuf> {
-    #[cfg(target_os = "windows")]
-    {
-        std::env::var_os("APPDATA").map(PathBuf::from)
-    }
-    #[cfg(target_os = "macos")]
-    {
-        std::env::var_os("HOME")
-            .map(|h| PathBuf::from(h).join("Library").join("Application Support"))
-    }
-    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
-    {
-        if let Some(d) = std::env::var_os("XDG_DATA_HOME") {
-            Some(PathBuf::from(d))
-        } else {
-            std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local").join("share"))
-        }
-    }
-}
+// 執行檔當下目錄（與 settings.json 同位置），方便回報問題時提供。
+// macOS / Linux 同此政策，不寫入使用者資料目錄。
 
 fn log_file_path() -> Option<PathBuf> {
-    let dir = user_data_dir()?.join("UE_L10nTool");
-    std::fs::create_dir_all(&dir).ok()?;
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?.to_path_buf();
     Some(dir.join("startup.log"))
 }
 
@@ -170,29 +152,61 @@ fn system_font_candidates() -> Vec<std::path::PathBuf> {
     {
         let p = |s: &str| std::path::PathBuf::from(s);
         vec![
-            p("/System/Library/Fonts/PingFang.ttc"),           // 蘋方 繁體 ★
+            p("/System/Library/Fonts/PingFang.ttc"),         // 蘋方 繁體 ★
             p("/System/Library/Fonts/STHeiti Medium.ttc"),
             p("/System/Library/Fonts/STHeiti Light.ttc"),
-            p("/System/Library/Fonts/ヒラギノ角ゴシック W3.ttc"),
-            p("/Library/Fonts/Hiragino Sans GB.ttc"),
+            p("/System/Library/Fonts/Hiragino Sans GB.ttc"), // macOS 10.13+ 新位置
+            p("/Library/Fonts/Hiragino Sans GB.ttc"),        // macOS 10.12 以前位置
             p("/Library/Fonts/Arial Unicode.ttf"),
         ]
     }
     #[cfg(target_os = "linux")]
     {
         let p = |s: &str| std::path::PathBuf::from(s);
-        vec![
+        let mut paths: Vec<std::path::PathBuf> = vec![
+            // ── 系統字體（依發行版分布）─────────────────────────────────
             p("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"), // Noto ★
             p("/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc"),
             p("/usr/share/fonts/noto-cjk/NotoSansCJKtc-Regular.otf"),
             p("/usr/share/fonts/noto/NotoSansCJK-Regular.ttc"),
+            p("/usr/share/fonts/google-noto-cjk-fonts/NotoSansCJK-Regular.ttc"), // Fedora
             p("/usr/share/fonts/truetype/wqy/wqy-microhei.ttc"),         // 文泉驛
             p("/usr/share/fonts/wenquanyi/wqy-microhei/wqy-microhei.ttc"),
             p("/usr/share/fonts/truetype/arphic/uming.ttc"),              // AR PL
             p("/usr/share/fonts/truetype/arphic/ukai.ttc"),
             p("/usr/share/fonts/opentype/source-han-sans/SourceHanSansTC-Regular.otf"),
             p("/usr/share/fonts/adobe-source-han-sans/SourceHanSansTC-Regular.otf"),
-        ]
+        ];
+
+        // ── 使用者字體目錄（XDG 與傳統 ~/.fonts）：列舉並收集 CJK 候選 ──
+        if let Some(home) = std::env::var_os("HOME") {
+            let home = std::path::PathBuf::from(home);
+            for sub in &[".local/share/fonts", ".fonts"] {
+                let user_dir = home.join(sub);
+                if let Ok(rd) = std::fs::read_dir(&user_dir) {
+                    for entry in rd.flatten() {
+                        let path = entry.path();
+                        let name = path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("")
+                            .to_ascii_lowercase();
+                        let is_font = name.ends_with(".ttc")
+                            || name.ends_with(".ttf")
+                            || name.ends_with(".otf");
+                        let looks_cjk = name.contains("cjk")
+                            || name.contains("noto")
+                            || name.contains("hei")
+                            || name.contains("han");
+                        if is_font && looks_cjk {
+                            paths.push(path);
+                        }
+                    }
+                }
+            }
+        }
+
+        paths
     }
     #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
     {

@@ -16,6 +16,8 @@ rfd = "0.14"
 anyhow = "1"
 ue_mod_core = { path = "../core" }
 image = { version = "0.24", default-features = false, features = ["png"] }
+regex = "1"
+serde_json = "1"
 
 # winres 僅在編譯目標為 Windows 時拉取，避免 macOS/Linux 平白拖累 build
 [target.'cfg(windows)'.build-dependencies]

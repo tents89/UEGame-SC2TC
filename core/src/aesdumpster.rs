@@ -7,8 +7,10 @@ use std::path::Path;
 
 
 pub struct KeyDumpster {
-    pub key_vector: Vec<String>,
-    pub key_entropies: Vec<f64>,
+    // 候選 key 與對應 Shannon entropy；僅 KeyDumpster 內部使用，
+    // 外界透過 `extract_aes_key` 取得最終結果即可。
+    key_vector: Vec<String>,
+    key_entropies: Vec<f64>,
 
     key_patterns: Vec<&'static str>,
     false_positives: Vec<&'static str>,
