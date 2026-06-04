@@ -34,6 +34,18 @@ pub fn find_all_paks(game_dir: &Path) -> Vec<PathBuf> {
 }
 
 pub fn scan_pak(container_path: &Path, aes_key_hex: Option<&str>) -> Result<Vec<PakEntry>> {
+    scan_pak_with_options(container_path, aes_key_hex, false)
+}
+
+pub fn scan_pak_all(container_path: &Path, aes_key_hex: Option<&str>) -> Result<Vec<PakEntry>> {
+    scan_pak_with_options(container_path, aes_key_hex, true)
+}
+
+fn scan_pak_with_options(
+    container_path: &Path,
+    aes_key_hex: Option<&str>,
+    all_files: bool,
+) -> Result<Vec<PakEntry>> {
     let ext = container_path
         .extension()
         .unwrap_or_default()
@@ -41,9 +53,9 @@ pub fn scan_pak(container_path: &Path, aes_key_hex: Option<&str>) -> Result<Vec<
         .to_lowercase();
 
     if ext == "utoc" {
-        scan_pak_utoc(container_path, aes_key_hex)
+        scan_pak_utoc(container_path, aes_key_hex, all_files)
     } else {
-        scan_pak_pak(container_path, aes_key_hex)
+        scan_pak_pak(container_path, aes_key_hex, all_files)
     }
 }
 
@@ -60,7 +72,7 @@ fn is_engine_path(lower_path: &str) -> bool {
     lower_path.starts_with("engine/") || lower_path.contains("/engine/")
 }
 
-fn scan_pak_utoc(container_path: &Path, aes_key_hex: Option<&str>) -> Result<Vec<PakEntry>> {
+fn scan_pak_utoc(container_path: &Path, aes_key_hex: Option<&str>, all_files: bool) -> Result<Vec<PakEntry>> {
     let mut config = retoc::Config::default();
     if let Some(key_hex) = aes_key_hex {
         let k = std::str::FromStr::from_str(key_hex)
@@ -78,7 +90,10 @@ fn scan_pak_utoc(container_path: &Path, aes_key_hex: Option<&str>) -> Result<Vec
             let clean_path = p.strip_prefix("../../../").unwrap_or(&p).to_string();
             let line_lower = clean_path.to_lowercase();
 
-            if is_engine_path(&line_lower) || !is_target_file(&line_lower) {
+            if is_engine_path(&line_lower) {
+                return None;
+            }
+            if !all_files && !is_target_file(&line_lower) {
                 return None;
             }
 
@@ -93,7 +108,7 @@ fn scan_pak_utoc(container_path: &Path, aes_key_hex: Option<&str>) -> Result<Vec
     Ok(result)
 }
 
-fn scan_pak_pak(container_path: &Path, aes_key_hex: Option<&str>) -> Result<Vec<PakEntry>> {
+fn scan_pak_pak(container_path: &Path, aes_key_hex: Option<&str>, all_files: bool) -> Result<Vec<PakEntry>> {
     use std::fs::File;
     use std::io::BufReader;
     let mut file = BufReader::new(File::open(container_path)?);
@@ -126,7 +141,10 @@ fn scan_pak_pak(container_path: &Path, aes_key_hex: Option<&str>) -> Result<Vec<
                 .to_string();
             let line_lower = clean_path.to_lowercase();
 
-            if is_engine_path(&line_lower) || !is_target_file(&line_lower) {
+            if is_engine_path(&line_lower) {
+                return None;
+            }
+            if !all_files && !is_target_file(&line_lower) {
                 return None;
             }
 
@@ -144,6 +162,12 @@ fn scan_pak_pak(container_path: &Path, aes_key_hex: Option<&str>) -> Result<Vec<
 pub fn scan_all_paks(paks: &[PathBuf], aes_key: Option<&str>) -> Vec<(PathBuf, Result<Vec<PakEntry>>)> {
     paks.par_iter()
         .map(|pak| (pak.clone(), scan_pak(pak, aes_key)))
+        .collect()
+}
+
+pub fn scan_all_paks_full(paks: &[PathBuf], aes_key: Option<&str>) -> Vec<(PathBuf, Result<Vec<PakEntry>>)> {
+    paks.par_iter()
+        .map(|pak| (pak.clone(), scan_pak_all(pak, aes_key)))
         .collect()
 }
 

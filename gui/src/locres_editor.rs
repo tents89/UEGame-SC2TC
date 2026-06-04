@@ -1,4 +1,3 @@
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use egui::*;
 use egui_extras::{TableBuilder, Column};
@@ -29,7 +28,6 @@ struct ConversionTask {
 
 pub struct LocresEditorState {
     pub current_path: Option<String>,
-    pub current_pak: Option<PathBuf>,
     pub entries: Vec<LocresEntry>,
     pub search: String,
     pub show_modified_only: bool,
@@ -49,7 +47,6 @@ impl Default for LocresEditorState {
     fn default() -> Self {
         Self {
             current_path: None,
-            current_pak: None,
             entries: vec![],
             search: String::new(),
             show_modified_only: false,
@@ -69,7 +66,6 @@ impl Default for LocresEditorState {
 impl LocresEditorState {
     pub fn open_locres(&mut self, path: &str, pak: &std::path::Path, aes_key: &str) {
         self.current_path = Some(path.to_string());
-        self.current_pak = Some(pak.to_path_buf());
         self.entries.clear();
         self.is_loaded = false;
         self.status = "正在讀取 locres...".to_string();

@@ -3,12 +3,15 @@ use std::path::PathBuf;
 use egui::*;
 use ue_mod_core::{PakEntry, TreeNode, FontReplacement};
 
+use crate::dev_mode::FilterCache;
+
 #[derive(Default)]
 pub struct TreeViewState {
     pub selected_path: Option<String>,
     pub multi_selected: HashSet<String>,
     pub expanded: HashSet<String>,
     pub filter: String,
+    pub use_regex: bool,
 
     drag_start: Option<Pos2>,
     drag_current: Option<Pos2>,
@@ -40,6 +43,8 @@ pub fn show_tree(
     open_locres: &mut Option<(String, PathBuf)>,
     add_font: &mut Option<FontReplacement>,
     batch_fonts: &mut Option<Vec<FontReplacement>>,
+    cache: &FilterCache,
+    navigate_to: &mut Option<Vec<String>>,
 ) {
     ui.horizontal(|ui| {
         ui.label("搜尋:");
@@ -47,11 +52,16 @@ pub fn show_tree(
         if ui.small_button("X").clicked() {
             state.filter.clear();
         }
+        ui.checkbox(&mut state.use_regex, "Regex");
     });
 
     ui.separator();
 
-    let filter = state.filter.to_lowercase();
+    if state.use_regex && !state.filter.is_empty() {
+        if regex::RegexBuilder::new(&state.filter).case_insensitive(true).build().is_err() {
+            ui.colored_label(Color32::RED, "Regex 語法錯誤，已忽略");
+        }
+    }
 
     let interact_rect = ui.available_rect_before_wrap();
     let response = ui.interact(interact_rect, ui.id().with("tree_drag"), Sense::drag());
@@ -86,7 +96,10 @@ pub fn show_tree(
         None
     };
 
-    show_nodes(ui, nodes, state, "", &filter, open_locres, add_font, batch_fonts, 0, drag_rect);
+    show_nodes(
+        ui, nodes, state, "", cache,
+        open_locres, add_font, batch_fonts, 0, drag_rect, navigate_to,
+    );
 }
 
 fn show_nodes(
@@ -94,13 +107,16 @@ fn show_nodes(
     nodes: &[TreeNode],
     state: &mut TreeViewState,
     parent_path: &str,
-    filter: &str,
+    cache: &FilterCache,
     open_locres: &mut Option<(String, PathBuf)>,
     add_font: &mut Option<FontReplacement>,
     batch_fonts: &mut Option<Vec<FontReplacement>>,
     depth: usize,
     drag_rect: Option<Rect>,
+    navigate_to: &mut Option<Vec<String>>,
 ) {
+    let cache_active = cache.is_active();
+
     for node in nodes {
         match node {
             TreeNode::Dir { name, children, .. } => {
@@ -110,7 +126,7 @@ fn show_nodes(
                     format!("{}/{}", parent_path, name)
                 };
 
-                if !filter.is_empty() && !dir_matches_filter(children, filter) {
+                if cache_active && !cache.matched_dirs.contains(&full_path) {
                     continue;
                 }
 
@@ -131,15 +147,22 @@ fn show_nodes(
                     } else {
                         state.expanded.insert(full_path.clone());
                     }
+                    // 同步穿梭模式：點到資料夾就把右側「當下目錄」切到這層。
+                    *navigate_to = Some(
+                        full_path.split('/').filter(|s| !s.is_empty()).map(str::to_string).collect()
+                    );
                 }
 
                 if is_expanded {
-                    show_nodes(ui, children, state, &full_path, filter, open_locres, add_font, batch_fonts, depth + 1, drag_rect);
+                    show_nodes(
+                        ui, children, state, &full_path, cache,
+                        open_locres, add_font, batch_fonts, depth + 1, drag_rect, navigate_to,
+                    );
                 }
             }
 
             TreeNode::File(entry) => {
-                if !filter.is_empty() && !entry.path.to_lowercase().contains(filter) {
+                if cache_active && !cache.matched_files.contains(&entry.path) {
                     continue;
                 }
 
@@ -174,6 +197,13 @@ fn show_nodes(
                 if response.clicked() {
                     let multi = ui.input(|i| i.modifiers.ctrl || i.modifiers.shift);
                     state.select(entry.path.clone(), multi);
+                    // 同步穿梭模式：點到檔案時，把當下目錄切到該檔所在資料夾。
+                    if !multi {
+                        *navigate_to = Some(
+                            parent_path.split('/').filter(|s| !s.is_empty())
+                                .map(str::to_string).collect()
+                        );
+                    }
                 }
 
                 if response.double_clicked() && entry.is_locres() {
@@ -188,14 +218,6 @@ fn show_nodes(
             }
         }
     }
-}
-
-// 優化點：使用 Iterator::any 取代手動 for + return，更符合 Rust 慣例
-fn dir_matches_filter(nodes: &[TreeNode], filter: &str) -> bool {
-    nodes.iter().any(|node| match node {
-        TreeNode::File(e) => e.path.to_lowercase().contains(filter),
-        TreeNode::Dir { children, .. } => dir_matches_filter(children, filter),
-    })
 }
 
 fn show_context_menu(

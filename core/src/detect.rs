@@ -67,11 +67,12 @@ fn try_read_exe_version(game_dir: &Path) -> Option<DetectResult> {
         let Ok(e) = entry else { continue };
         let p = e.path();
 
-        if !p.extension().is_some_and(|ext| ext == "exe") {
+        if !p.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("exe")) {
             continue;
         }
         let name = p.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
-        if !p.to_string_lossy().contains("Binaries") || !name.contains("shipping") {
+        let path_lower = p.to_string_lossy().to_lowercase();
+        if !path_lower.contains("binaries") || !name.contains("shipping") {
             continue;
         }
 

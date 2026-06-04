@@ -7,6 +7,7 @@ use ue_mod_core::*;
 use crate::tree_view::TreeViewState;
 use crate::locres_editor::LocresEditorState;
 use crate::build_panel::BuildPanelState;
+use crate::dev_mode::{ExternalFilter, FilterCache};
 
 #[derive(PartialEq, Clone, Copy)]
 pub enum ActivePanel {
@@ -57,6 +58,16 @@ pub struct App {
     pub wne_paks_need_aes: bool,
     pub wne_manual_version: Option<UEVersion>,
     pub wne_aes_input: String,
+
+    // 開發者模式
+    pub settings: Settings,
+    pub show_dev_warning: bool,
+    pub dev_skip_warning_temp: bool,
+    pub dev_browser_path: Vec<String>,
+    pub dev_external_filter: Option<ExternalFilter>,
+    pub dev_external_filter_name: Option<String>,
+    pub filter_cache: FilterCache,
+    pub tree_file_count: usize,
 }
 
 impl Default for App {
@@ -91,13 +102,27 @@ impl Default for App {
             wne_paks_need_aes: false,
             wne_manual_version: None,
             wne_aes_input: String::new(),
+            settings: Settings::default(),
+            show_dev_warning: false,
+            dev_skip_warning_temp: false,
+            dev_browser_path: vec![],
+            dev_external_filter: None,
+            dev_external_filter_name: None,
+            filter_cache: FilterCache::default(),
+            tree_file_count: 0,
         }
     }
 }
 
 impl App {
     pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
-        Self::default()
+        let settings = Settings::load_or_create();
+        let show_dev_warning = settings.is_dev_mode() && !settings.skip_warning;
+        Self {
+            settings,
+            show_dev_warning,
+            ..Self::default()
+        }
     }
 
     fn push_log(&mut self, level: LogLevel, msg: impl Into<String>) {
@@ -117,13 +142,14 @@ impl App {
             }
         };
 
-        // 搜尋 Shipping EXE
+        // 搜尋 Shipping EXE（大小寫不敏感，相容 Linux/macOS 上開啟 Windows 版檔案的情境）
         let mut shipping_exes = vec![];
         for entry in walkdir::WalkDir::new(&game_dir).max_depth(5).into_iter().flatten() {
             let p = entry.path();
-            if !p.extension().is_some_and(|ext| ext == "exe") { continue; }
+            if !p.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("exe")) { continue; }
             let name = p.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
-            if p.to_string_lossy().contains("Binaries") && name.contains("shipping") {
+            let path_lower = p.to_string_lossy().to_lowercase();
+            if path_lower.contains("binaries") && name.contains("shipping") {
                 shipping_exes.push(p.to_path_buf());
             }
         }
@@ -197,7 +223,12 @@ impl App {
         self.push_log(LogLevel::Info, format!("找到 {} 個容器檔案 (PAK/UTOC)", paks.len()));
 
         let key_opt = if self.aes_key.is_empty() { None } else { Some(self.aes_key.as_str()) };
-        let scan_results = scan_all_paks(&paks, key_opt);
+        let dev_mode = self.settings.is_dev_mode();
+        let scan_results = if dev_mode {
+            scan_all_paks_full(&paks, key_opt)
+        } else {
+            scan_all_paks(&paks, key_opt)
+        };
 
         let needs_aes = scan_results.iter().any(|(_, r)| r.is_err()) && self.aes_key.is_empty();
         if needs_aes {
@@ -235,6 +266,7 @@ impl App {
         self.all_paks = paks;
         self.tree_root = build_tree(&all_entries);
         let (dirs, files) = count_entries(&self.tree_root);
+        self.tree_file_count = files;
         self.scan_status = format!("共 {} 個目錄，{} 個檔案", dirs, files);
         let status = self.scan_status.clone();
         self.push_log(LogLevel::Success, format!("掃描完成：{}", status));
@@ -243,6 +275,36 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if self.show_dev_warning {
+            let mut close = false;
+            let mut skip = self.dev_skip_warning_temp;
+            egui::Window::new("[進階] 開發者模式")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.colored_label(Color32::from_rgb(255, 200, 50), "目前為進階模式");
+                    ui.label("可以解包檔案與探索資產目錄，不提供製作模組功能。");
+                    ui.label("若不需要，請在 settings.json 將 dev_mode 改為 0 關閉。");
+                    ui.add_space(8.0);
+                    ui.checkbox(&mut skip, "不再提醒");
+                    ui.add_space(6.0);
+                    if ui.button("我了解").clicked() {
+                        close = true;
+                    }
+                });
+            self.dev_skip_warning_temp = skip;
+            if close {
+                if skip {
+                    self.settings.skip_warning = true;
+                    if let Err(e) = self.settings.save() {
+                        self.push_log(LogLevel::Warning, format!("無法寫入 settings.json: {}", e));
+                    }
+                }
+                self.show_dev_warning = false;
+            }
+        }
+
         if self.show_multi_exe_warning {
             egui::Window::new("[警告] 目錄選擇錯誤")
                 .collapsible(false)
@@ -499,6 +561,22 @@ impl eframe::App for App {
         TopBottomPanel::top("toolbar").show(ctx, |ui| self.show_toolbar(ui));
         TopBottomPanel::bottom("statusbar").show(ctx, |ui| self.show_statusbar(ui));
 
+        let dev_mode = self.settings.is_dev_mode();
+
+        // 每幀於 UI 繪製前檢查並重建 cache（指紋一致則零成本跳過）
+        self.filter_cache.rebuild_if_needed(
+            &self.tree_root,
+            &self.tree_view.filter,
+            self.tree_view.use_regex,
+            self.dev_external_filter.as_ref(),
+            self.tree_file_count,
+        );
+
+        // dev_mode=1 強制將被隱藏的面板切回 Files
+        if dev_mode && matches!(self.active_panel, ActivePanel::LocresEditor | ActivePanel::Build) {
+            self.active_panel = ActivePanel::Files;
+        }
+
         if self.active_panel == ActivePanel::About {
             CentralPanel::default().show(ctx, |ui| self.show_main_panel(ui));
             return;
@@ -508,8 +586,8 @@ impl eframe::App for App {
         let left_width = total_width * 0.35;
         let right_width = total_width * 0.20;
 
-        let hide_right_panel =
-            self.active_panel == ActivePanel::LocresEditor && self.locres_editor.is_loaded;
+        let hide_right_panel = dev_mode
+            || (self.active_panel == ActivePanel::LocresEditor && self.locres_editor.is_loaded);
 
         SidePanel::left("left_panel")
             .exact_width(left_width)
@@ -533,25 +611,40 @@ impl App {
             ui.heading("Unreal Engine L10n Mod Tool");
             ui.separator();
 
-            for (panel, label) in [
-                (ActivePanel::Files,        "檔案"),
-                (ActivePanel::LocresEditor, "在地化編輯"),
-                (ActivePanel::Build,        "建構"),
-                (ActivePanel::Log,          "日誌"),
-                (ActivePanel::About,        "關於"),
-            ] {
-                if ui.selectable_label(self.active_panel == panel, label).clicked() {
-                    self.active_panel = panel;
+            let dev_mode = self.settings.is_dev_mode();
+            let panels: &[(ActivePanel, &str)] = if dev_mode {
+                &[
+                    (ActivePanel::Files, "檔案"),
+                    (ActivePanel::Log,   "日誌"),
+                    (ActivePanel::About, "關於"),
+                ]
+            } else {
+                &[
+                    (ActivePanel::Files,        "檔案"),
+                    (ActivePanel::LocresEditor, "在地化編輯"),
+                    (ActivePanel::Build,        "建構"),
+                    (ActivePanel::Log,          "日誌"),
+                    (ActivePanel::About,        "關於"),
+                ]
+            };
+
+            for (panel, label) in panels {
+                if ui.selectable_label(self.active_panel == *panel, *label).clicked() {
+                    self.active_panel = *panel;
                 }
             }
 
             ui.separator();
 
-            let changes = self.staging.total_changes();
-            if changes > 0 {
-                ui.colored_label(Color32::from_rgb(255, 200, 50), format!("{} 個修改待建構", changes));
+            if dev_mode {
+                ui.colored_label(Color32::from_rgb(255, 200, 50), "進階模式 (dev_mode = 1)");
             } else {
-                ui.label(RichText::new("無修改").color(Color32::GRAY));
+                let changes = self.staging.total_changes();
+                if changes > 0 {
+                    ui.colored_label(Color32::from_rgb(255, 200, 50), format!("{} 個修改待建構", changes));
+                } else {
+                    ui.label(RichText::new("無修改").color(Color32::GRAY));
+                }
             }
         });
     }
@@ -584,9 +677,22 @@ impl App {
             let mut open_locres: Option<(String, PathBuf)> = None;
             let mut add_font: Option<FontReplacement> = None;
             let mut batch_fonts: Option<Vec<FontReplacement>> = None;
+            let mut navigate_to: Option<Vec<String>> = None;
 
-            crate::tree_view::show_tree(ui, &tree, &mut self.tree_view, &mut open_locres, &mut add_font, &mut batch_fonts);
+            crate::tree_view::show_tree(
+                ui, &tree, &mut self.tree_view,
+                &mut open_locres, &mut add_font, &mut batch_fonts,
+                &self.filter_cache,
+                &mut navigate_to,
+            );
             self.tree_root = tree;
+
+            if let Some(target) = navigate_to {
+                // 開發者模式下，點左樹資料夾或檔案 → 把右側「當下目錄」同步過去。
+                if self.settings.is_dev_mode() {
+                    self.dev_browser_path = target;
+                }
+            }
 
             if let Some((path, pak)) = open_locres {
                 self.locres_editor.open_locres(&path, &pak, self.aes_key.as_str());
@@ -712,6 +818,10 @@ impl App {
     fn show_main_panel(&mut self, ui: &mut Ui) {
         match self.active_panel {
             ActivePanel::Files => {
+                if self.settings.is_dev_mode() {
+                    self.show_dev_browser(ui);
+                    return;
+                }
                 ui.heading("檔案詳細資訊");
                 ui.separator();
 
@@ -856,6 +966,37 @@ impl App {
                 });
 
                 ui.add_space(15.0);
+                ui.label(RichText::new("進階模式").strong());
+                let dev_mode_now = self.settings.is_dev_mode();
+                let mut dev_mode_new = dev_mode_now;
+                ui.horizontal(|ui| {
+                    if ui.checkbox(&mut dev_mode_new, "啟用進階模式（解包/資料探索，不提供模組製作）").changed() {
+                        self.settings.dev_mode = if dev_mode_new { 1 } else { 0 };
+                        match self.settings.save() {
+                            Ok(()) => {
+                                self.push_log(
+                                    LogLevel::Success,
+                                    format!(
+                                        "已將 dev_mode 改為 {}，請重新啟動工具讓設定生效。",
+                                        self.settings.dev_mode
+                                    ),
+                                );
+                            }
+                            Err(e) => {
+                                self.push_log(
+                                    LogLevel::Error,
+                                    format!("寫入 settings.json 失敗: {}", e),
+                                );
+                            }
+                        }
+                    }
+                });
+                ui.colored_label(
+                    Color32::from_rgb(255, 200, 50),
+                    "切換後需重新啟動本工具才會套用，以避免兩種模式的 UI 與狀態互相衝突。",
+                );
+
+                ui.add_space(15.0);
                 ui.label(RichText::new("Credits：").strong());
                 ui.add_space(5.0);
 
@@ -884,6 +1025,371 @@ impl App {
                 );
             }
         }
+    }
+
+    // ── 開發者模式：資料探索模式 ────────────────────────────────────────
+    fn show_dev_browser(&mut self, ui: &mut Ui) {
+        ui.horizontal(|ui| {
+            ui.heading("資料探索模式");
+            ui.separator();
+            ui.colored_label(Color32::from_rgb(255, 200, 50), "進階模式");
+        });
+
+        // 工具列：上一頁、使用外部 JSON 篩選
+        ui.horizontal(|ui| {
+            let can_back = !self.dev_browser_path.is_empty();
+            if ui.add_enabled(can_back, Button::new("◀ 上一頁")).clicked() {
+                self.dev_browser_path.pop();
+            }
+            if ui.button("⌂ 根目錄").clicked() {
+                self.dev_browser_path.clear();
+            }
+            ui.separator();
+            if ui.button("使用外部 JSON 篩選").clicked() {
+                if let Some(file) = rfd::FileDialog::new()
+                    .add_filter("JSON", &["json"])
+                    .pick_file()
+                {
+                    match crate::dev_mode::load_json_path_filter(&file) {
+                        Ok(set) => {
+                            let n = set.len();
+                            let ext = ExternalFilter::from_paths(set);
+                            self.dev_external_filter = Some(ext);
+                            self.dev_external_filter_name = Some(
+                                file.file_name().unwrap_or_default().to_string_lossy().into_owned()
+                            );
+                            self.push_log(LogLevel::Success, format!("已導入 JSON 篩選：{} 個 path", n));
+
+                            // JSON 載入後立刻重建 cache 以獲得 matched_files
+                            self.filter_cache.rebuild_if_needed(
+                                &self.tree_root,
+                                &self.tree_view.filter,
+                                self.tree_view.use_regex,
+                                self.dev_external_filter.as_ref(),
+                                self.tree_file_count,
+                            );
+
+                            // 自動把所有匹配的檔案選取起來，方便批量導出
+                            let matched = self.filter_cache.matched_files.clone();
+                            self.tree_view.multi_selected = matched;
+                            self.tree_view.selected_path = None;
+                            self.push_log(
+                                LogLevel::Info,
+                                format!("自動選取 {} 個匹配檔案", self.tree_view.multi_selected.len()),
+                            );
+                        }
+                        Err(e) => {
+                            self.push_log(LogLevel::Error, format!("JSON 解析失敗: {}", e));
+                        }
+                    }
+                }
+            }
+            if self.dev_external_filter.is_some() {
+                if ui.button("清除 JSON 篩選").clicked() {
+                    self.dev_external_filter = None;
+                    self.dev_external_filter_name = None;
+                }
+            }
+
+            ui.separator();
+            let sel_count = self.tree_view.multi_selected.len();
+            ui.label(format!("已選取 {}", sel_count));
+            if sel_count > 0 && ui.button("清除選取").clicked() {
+                self.tree_view.multi_selected.clear();
+                self.tree_view.selected_path = None;
+            }
+            let can_export = sel_count > 0;
+            if ui.add_enabled(can_export, Button::new("批量導出選取項目"))
+                .on_hover_text("把所選的檔案從 PAK / IoStore 原樣寫到指定資料夾。")
+                .clicked()
+            {
+                self.export_selected_entries();
+            }
+        });
+
+        if let Some(name) = &self.dev_external_filter_name {
+            ui.colored_label(
+                Color32::from_rgb(150, 200, 255),
+                format!(
+                    "[JSON 篩選] {}（{} 條 path / 匹配 {} 個檔案）",
+                    name,
+                    self.dev_external_filter.as_ref().map(|e| e.len()).unwrap_or(0),
+                    self.filter_cache.total_matches,
+                ),
+            );
+        }
+
+        // 即時路徑顯示
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("當下目錄：").strong());
+            if self.dev_browser_path.is_empty() {
+                ui.label(RichText::new("/").color(Color32::LIGHT_BLUE));
+            } else {
+                let mut click_to: Option<usize> = None;
+                ui.label("/");
+                for (i, seg) in self.dev_browser_path.iter().enumerate() {
+                    if ui.link(seg).clicked() {
+                        click_to = Some(i + 1);
+                    }
+                    ui.label("/");
+                }
+                if let Some(depth) = click_to {
+                    self.dev_browser_path.truncate(depth);
+                }
+            }
+        });
+
+        ui.separator();
+
+        // 搜尋（支援 Regex）
+        ui.horizontal(|ui| {
+            ui.label("搜尋:");
+            ui.text_edit_singleline(&mut self.tree_view.filter);
+            if ui.small_button("X").clicked() {
+                self.tree_view.filter.clear();
+            }
+            ui.checkbox(&mut self.tree_view.use_regex, "Regex");
+
+            if self.tree_view.use_regex && !self.tree_view.filter.is_empty() {
+                if regex::RegexBuilder::new(&self.tree_view.filter).case_insensitive(true).build().is_err() {
+                    ui.colored_label(Color32::RED, "Regex 語法錯誤");
+                }
+            }
+        });
+
+        ui.separator();
+
+        // 解析當下目錄的子節點
+        let path = self.dev_browser_path.clone();
+        let nodes_at = match find_nodes_at_path(&self.tree_root, &path) {
+            Some(n) => n,
+            None => {
+                ui.colored_label(Color32::RED, "目錄不存在（可能已被移除），已退回上一層。");
+                if !self.dev_browser_path.is_empty() {
+                    self.dev_browser_path.pop();
+                }
+                return;
+            }
+        };
+
+        // 「當下目錄全選」工具列。把對 self.tree_view 的可變寫入延後到借用 nodes_at 之外。
+        let mut to_insert: Vec<String> = Vec::new();
+        ui.horizontal(|ui| {
+            if ui.button("選取本層全部").clicked() {
+                let cache_active = self.filter_cache.is_active();
+                for node in nodes_at {
+                    if let TreeNode::File(e) = node {
+                        if !cache_active || self.filter_cache.matched_files.contains(&e.path) {
+                            to_insert.push(e.path.clone());
+                        }
+                    }
+                }
+            }
+            if ui.button("選取本層遞迴全部").clicked() {
+                let cache_active = self.filter_cache.is_active();
+                let mut files: Vec<&PakEntry> = Vec::new();
+                crate::dev_mode::collect_all_files(nodes_at, &mut files);
+                for e in files {
+                    if !cache_active || self.filter_cache.matched_files.contains(&e.path) {
+                        to_insert.push(e.path.clone());
+                    }
+                }
+            }
+        });
+
+        ui.separator();
+
+        let cache_active = self.filter_cache.is_active();
+        let mut enter_dir: Option<String> = None;
+        let mut toggle_select: Option<String> = None;
+
+        ScrollArea::both().show(ui, |ui| {
+            let mut shown = 0usize;
+            for node in nodes_at {
+                match node {
+                    TreeNode::Dir { name, children: _, .. } => {
+                        let dir_full = build_full_path_for(&path, name);
+                        if cache_active && !self.filter_cache.matched_dirs.contains(&dir_full) {
+                            continue;
+                        }
+                        shown += 1;
+                        let label = RichText::new(format!("📁 {}", name))
+                            .color(Color32::from_rgb(180, 200, 255));
+                        if ui.selectable_label(false, label).clicked() {
+                            enter_dir = Some(name.clone());
+                        }
+                    }
+                    TreeNode::File(entry) => {
+                        if cache_active && !self.filter_cache.matched_files.contains(&entry.path) {
+                            continue;
+                        }
+                        shown += 1;
+                        let icon = if entry.is_locres() { "📝" }
+                            else if entry.is_font() { "🔤" }
+                            else { "📄" };
+                        let file_name = entry.file_name();
+                        let mut label = RichText::new(format!("{} {}", icon, file_name));
+                        if entry.is_locres() {
+                            label = label.color(Color32::from_rgb(150, 230, 150));
+                        } else if entry.is_font() {
+                            label = label.color(Color32::from_rgb(230, 180, 100));
+                        }
+                        let selected = self.tree_view.multi_selected.contains(&entry.path);
+                        let resp = ui.selectable_label(selected, label);
+                        if resp.clicked() {
+                            toggle_select = Some(entry.path.clone());
+                        }
+                        let pak_name = entry.pak.file_name().unwrap_or_default().to_string_lossy();
+                        let entry_path = entry.path.clone();
+                        let entry_pak = entry.pak.clone();
+                        let pak_display = entry.pak.display().to_string();
+                        resp.on_hover_text(format!("{}\n← {}", entry_path, pak_name)).context_menu(|ui| {
+                            ui.label(RichText::new(&entry_path).small().color(Color32::GRAY));
+                            ui.separator();
+                            if ui.button("複製內部路徑").clicked() {
+                                ui.output_mut(|o| o.copied_text = entry_path.clone());
+                                ui.close_menu();
+                            }
+                            if ui.button("複製 PAK 路徑").clicked() {
+                                ui.output_mut(|o| o.copied_text = pak_display);
+                                ui.close_menu();
+                            }
+                            let _ = entry_pak; // 保留供未來右鍵 → 單檔導出使用
+                        });
+                    }
+                }
+            }
+            if shown == 0 {
+                ui.colored_label(Color32::GRAY, "（無項目）");
+            }
+        });
+
+        if let Some(name) = enter_dir {
+            self.dev_browser_path.push(name);
+        }
+        if let Some(p) = toggle_select {
+            // dev mode 下點擊即 toggle 多選（保留 selected_path 顯示）
+            self.tree_view.select(p, true);
+        }
+        for p in to_insert {
+            self.tree_view.multi_selected.insert(p);
+        }
+    }
+
+    // ── 批量導出 ───────────────────────────────────────────────────────────
+    fn export_selected_entries(&mut self) {
+        // 先把選取項複製出來，免得後面開檔對話框、log 寫入時跟 self 借用衝突。
+        let selected: Vec<String> = self.tree_view.multi_selected.iter().cloned().collect();
+        if selected.is_empty() {
+            self.push_log(LogLevel::Warning, "尚未選取任何項目，已取消導出。");
+            return;
+        }
+
+        let target = match rfd::FileDialog::new().pick_folder() {
+            Some(p) => p,
+            None => {
+                self.push_log(LogLevel::Info, "已取消選擇導出目錄。");
+                return;
+            }
+        };
+
+        self.push_log(
+            LogLevel::Info,
+            format!("批量導出開始：{} 個項目 → {}", selected.len(), target.display()),
+        );
+
+        // 把 multi_selected 路徑 → pak_path 索引（owned，避免後續借用衝突）
+        let path_to_pak: std::collections::HashMap<String, PathBuf> = {
+            let mut all_files: Vec<&PakEntry> = Vec::new();
+            crate::dev_mode::collect_all_files(&self.tree_root, &mut all_files);
+            all_files.iter().map(|e| (e.path.clone(), e.pak.clone())).collect()
+        };
+
+        let aes_opt = if self.aes_key.is_empty() { None } else { Some(self.aes_key.clone()) };
+
+        // 依 pak 分組 → 同一容器內共用一次 IoStore open / FZenPackageContext。
+        let mut grouped: std::collections::BTreeMap<PathBuf, Vec<String>> =
+            std::collections::BTreeMap::new();
+        let mut missing: Vec<String> = Vec::new();
+        for ip in &selected {
+            match path_to_pak.get(ip) {
+                Some(pak) => grouped.entry(pak.clone()).or_default().push(ip.clone()),
+                None => missing.push(ip.clone()),
+            }
+        }
+
+        let mut ok = 0usize;
+        let mut fail = 0usize;
+        let mut written_files = 0usize;
+        let mut errs: Vec<String> = Vec::new();
+
+        for ip in missing {
+            fail += 1;
+            errs.push(format!("找不到對應 PakEntry: {}", ip));
+        }
+
+        for (pak_path, paths) in grouped {
+            let results = ue_mod_core::extract::export_entries_to_dir(
+                &pak_path,
+                &paths,
+                &target,
+                aes_opt.as_deref(),
+            );
+            for (ip, res) in results {
+                match res {
+                    Ok(files) => {
+                        ok += 1;
+                        written_files += files.len();
+                    }
+                    Err(e) => {
+                        fail += 1;
+                        errs.push(format!("導出失敗 {}: {:#}", ip, e));
+                    }
+                }
+            }
+        }
+
+        for msg in errs {
+            self.push_log(LogLevel::Error, msg);
+        }
+        self.push_log(
+            LogLevel::Success,
+            format!(
+                "批量導出完成：項目成功 {}，失敗 {}，實際寫出 {} 個檔案（→ {}）",
+                ok, fail, written_files, target.display()
+            ),
+        );
+    }
+}
+
+// ── 開發者模式輔助函式 ─────────────────────────────────────────────────────
+
+/// 從根節點開始，按 path segments 逐層往下尋找該目錄的 children。
+fn find_nodes_at_path<'a>(root: &'a [TreeNode], path: &[String]) -> Option<&'a [TreeNode]> {
+    if path.is_empty() {
+        return Some(root);
+    }
+    let mut current: &[TreeNode] = root;
+    for seg in path {
+        let mut next: Option<&[TreeNode]> = None;
+        for node in current {
+            if let TreeNode::Dir { name, children, .. } = node {
+                if name == seg {
+                    next = Some(children.as_slice());
+                    break;
+                }
+            }
+        }
+        current = next?;
+    }
+    Some(current)
+}
+
+fn build_full_path_for(parent: &[String], name: &str) -> String {
+    if parent.is_empty() {
+        name.to_string()
+    } else {
+        format!("{}/{}", parent.join("/"), name)
     }
 }
 

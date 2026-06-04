@@ -90,15 +90,60 @@
 
 ---
 
+## 進階功能
+
+<table align="center">
+   <tr align="center">
+    <td align="center" valign="middle">
+      <img src="assets/Pack.png" width="350" style="display: block; margin: 0 auto;">
+    </td>
+    <td align="center" valign="middle">
+      <img src="assets/Dev.png" width="350" style="display: block; margin: 0 auto;">
+    </td>
+  </tr>
+</table>
+
+
+1. **打包模組**：建置頁面中的分頁提供打包外部檔案，取代繁瑣操作。
+> [!NOTE]
+> 來源資料夾：要打包檔案 `F:/YourMod/GameName/Content/Localization/Game/en/Game.locres`
+> 
+> 請選擇"YourMod"即可，不要選到GameName。
+
+2. **進階模式**：可以在關於頁面中啟用進階模式，本模式僅供探索與解包，不提供製作功能。
+> [!NOTE]
+> 模式開關後，請重新啟動程式避免任何問題。
+
+> ### 進階模式的外部篩選功能（請自己記錄並命名為 .json）
+>
+>* **Key 值規範**：不分大小寫（例如：`path` / `Path` / `PATH`）。
+>* **支援三種 JSON 寫法**：
+>  * **單字串**
+>    ```json
+>    { "Path": "Name/Content/XXXX/A.uasset" }
+>    ```
+>  * **字串陣列**
+>    ```json
+>    { "Path": ["Name/Content/XXXX/B.uasset", "Name/Content/XXXX/C.uasset"] }
+>    ```
+>  * **巢狀結構**
+>    ```json
+>    {
+>      "items": [
+>        { "path": "Name/Content/XXXX/Game" }
+>      ]
+>    }
+>    ```
+
+---
+
 ## 本工具使用以下遊戲進行完整功能測試：
 
 * *Titan Quest II*
 * *Quarantine Zone: The Last Check*
 * *Subnautica 2*
 
-
 ---
-
 
 ## 開發與建構 (Build from Source)
 
@@ -179,5 +224,6 @@ This project is open-sourced under the MIT, APACHE2.0 License - see the LICENSE 
 
 ```
  免責聲明：本工具僅供學術研究，與 Epic 公司無任何關聯。
- 本工具使用AI輔助製作，
+
+ 本項目使用AI輔助製作，
 ```
