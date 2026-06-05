@@ -676,7 +676,7 @@ impl App {
             let tree = std::mem::take(&mut self.tree_root);
             let mut open_locres: Option<(String, PathBuf)> = None;
             let mut add_font: Option<FontReplacement> = None;
-            let mut batch_fonts: Option<Vec<FontReplacement>> = None;
+            let mut batch_fonts: Option<(PathBuf, Vec<String>)> = None;
             let mut navigate_to: Option<Vec<String>> = None;
 
             crate::tree_view::show_tree(
@@ -699,9 +699,9 @@ impl App {
                 self.active_panel = ActivePanel::LocresEditor;
             }
             if let Some(font) = add_font {
-                // 若相同路徑已存在，直接覆蓋；否則新增
+                // 以 (source_pak, pak_path) 去重；相同則覆蓋。
                 if let Some(existing) = self.staging.font_replacements.iter_mut()
-                    .find(|f| f.pak_path == font.pak_path)
+                    .find(|f| f.source_pak == font.source_pak && f.pak_path == font.pak_path)
                 {
                     *existing = font;
                 } else {
@@ -709,19 +709,38 @@ impl App {
                 }
                 self.push_log(LogLevel::Info, "已加入字體替換");
             }
-            if let Some(fonts) = batch_fonts {
-                let count = fonts.len();
-                // 批量字體亦以覆蓋邏輯處理，確保不重複
-                for font in fonts {
-                    if let Some(existing) = self.staging.font_replacements.iter_mut()
-                        .find(|f| f.pak_path == font.pak_path)
-                    {
-                        *existing = font;
-                    } else {
-                        self.staging.font_replacements.push(font);
+            if let Some((replacement, paths)) = batch_fonts {
+                // 把內部路徑展開成所有來源 pak 的 FontReplacement。
+                let mut all_files: Vec<PakEntry> = vec![];
+                fn collect(nodes: &[TreeNode], out: &mut Vec<PakEntry>) {
+                    for n in nodes {
+                        match n {
+                            TreeNode::Dir { children, .. } => collect(children, out),
+                            TreeNode::File(e) => out.push(e.clone()),
+                        }
                     }
                 }
-                self.push_log(LogLevel::Info, format!("已批量加入 {} 個字體替換", count));
+                collect(&self.tree_root, &mut all_files);
+
+                let mut added = 0usize;
+                for p in &paths {
+                    for entry in all_files.iter().filter(|e| &e.path == p) {
+                        let font = FontReplacement {
+                            source_pak: entry.pak.clone(),
+                            pak_path: p.clone(),
+                            replacement: replacement.clone(),
+                        };
+                        if let Some(existing) = self.staging.font_replacements.iter_mut()
+                            .find(|f| f.source_pak == font.source_pak && f.pak_path == font.pak_path)
+                        {
+                            *existing = font;
+                        } else {
+                            self.staging.font_replacements.push(font);
+                            added += 1;
+                        }
+                    }
+                }
+                self.push_log(LogLevel::Info, format!("已批量加入 {} 個字體替換", added));
                 self.tree_view.multi_selected.clear();
             }
         });
@@ -789,11 +808,13 @@ impl App {
         ScrollArea::vertical().show(ui, |ui| {
             if !self.staging.locres_edits.is_empty() {
                 ui.label("在地化");
-                for (path, entries) in &self.staging.locres_edits {
+                for ((source_pak, path), entries) in &self.staging.locres_edits {
                     let count = entries.iter().filter(|e| e.is_modified()).count();
                     let name = path.rsplit('/').next().unwrap_or(path);
+                    let pak_name = source_pak.file_name().unwrap_or_default().to_string_lossy();
                     ui.horizontal(|ui| {
-                        ui.label(format!("  {} ({})", name, count));
+                        ui.label(format!("  {} ({})", name, count))
+                            .on_hover_text(format!("{}\n← {}", path, pak_name));
                     });
                 }
                 ui.separator();
@@ -803,7 +824,9 @@ impl App {
                 ui.label("字體替換");
                 for fr in &self.staging.font_replacements {
                     let name = fr.pak_path.rsplit('/').next().unwrap_or(&fr.pak_path);
-                    ui.label(format!("  {}", name));
+                    let pak_name = fr.source_pak.file_name().unwrap_or_default().to_string_lossy();
+                    ui.label(format!("  {} ← {}", name, pak_name))
+                        .on_hover_text(format!("{}\n← {}", fr.pak_path, pak_name));
                 }
                 ui.separator();
             }
@@ -838,21 +861,38 @@ impl App {
                                 .add_filter("字體檔案", &["ttf", "otf", "ufont"])
                                 .pick_file()
                             {
-                                for font_path in multi_fonts {
-                                    let font = FontReplacement {
-                                        pak_path: font_path,
-                                        replacement: new_font.clone(),
-                                    };
-                                    // 相同路徑已存在則覆蓋，否則新增
-                                    if let Some(existing) = self.staging.font_replacements.iter_mut()
-                                        .find(|f| f.pak_path == font.pak_path)
-                                    {
-                                        *existing = font;
-                                    } else {
-                                        self.staging.font_replacements.push(font);
+                                // 為每個選到的內部路徑找出所有來源 pak（同名跨 pak 都加入）。
+                                let mut all_files: Vec<PakEntry> = vec![];
+                                fn collect(nodes: &[TreeNode], out: &mut Vec<PakEntry>) {
+                                    for n in nodes {
+                                        match n {
+                                            TreeNode::Dir { children, .. } => collect(children, out),
+                                            TreeNode::File(e) => out.push(e.clone()),
+                                        }
                                     }
                                 }
-                                self.push_log(LogLevel::Info, "已加入批量字體替換");
+                                collect(&self.tree_root, &mut all_files);
+
+                                let mut added = 0usize;
+                                for font_path in &multi_fonts {
+                                    for entry in all_files.iter().filter(|e| &e.path == font_path) {
+                                        let font = FontReplacement {
+                                            source_pak: entry.pak.clone(),
+                                            pak_path: font_path.clone(),
+                                            replacement: new_font.clone(),
+                                        };
+                                        // 以 (source_pak, pak_path) 去重；同 pak 重複則覆蓋。
+                                        if let Some(existing) = self.staging.font_replacements.iter_mut()
+                                            .find(|f| f.source_pak == font.source_pak && f.pak_path == font.pak_path)
+                                        {
+                                            *existing = font;
+                                        } else {
+                                            self.staging.font_replacements.push(font);
+                                            added += 1;
+                                        }
+                                    }
+                                }
+                                self.push_log(LogLevel::Info, format!("已加入批量字體替換 {} 個", added));
                                 self.tree_view.multi_selected.clear();
                             }
                         }
@@ -914,12 +954,13 @@ impl App {
                                                 .pick_file()
                                             {
                                                 let font = FontReplacement {
+                                                    source_pak: entry.pak.clone(),
                                                     pak_path: entry.path.clone(),
                                                     replacement: new_font,
                                                 };
-                                                // 相同路徑已存在則覆蓋，否則新增
+                                                // 同 (source_pak, pak_path) 已存在則覆蓋，否則新增
                                                 if let Some(existing) = self.staging.font_replacements.iter_mut()
-                                                    .find(|f| f.pak_path == font.pak_path)
+                                                    .find(|f| f.source_pak == font.source_pak && f.pak_path == font.pak_path)
                                                 {
                                                     *existing = font;
                                                 } else {
@@ -970,7 +1011,7 @@ impl App {
                 let dev_mode_now = self.settings.is_dev_mode();
                 let mut dev_mode_new = dev_mode_now;
                 ui.horizontal(|ui| {
-                    if ui.checkbox(&mut dev_mode_new, "啟用進階模式（解包/資料探索，不提供模組製作）").changed() {
+                    if ui.checkbox(&mut dev_mode_new, "啟用進階模式（解包/穿梭瀏覽，不提供模組製作）").changed() {
                         self.settings.dev_mode = if dev_mode_new { 1 } else { 0 };
                         match self.settings.save() {
                             Ok(()) => {
@@ -1027,15 +1068,15 @@ impl App {
         }
     }
 
-    // ── 開發者模式：資料探索模式 ────────────────────────────────────────
+    // ── 開發者模式：資料夾穿梭瀏覽器 ────────────────────────────────────────
     fn show_dev_browser(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
-            ui.heading("資料探索模式");
+            ui.heading("資料夾穿梭模式");
             ui.separator();
             ui.colored_label(Color32::from_rgb(255, 200, 50), "進階模式");
         });
 
-        // 工具列：上一頁、使用外部 JSON 篩選
+        // 工具列：上一頁、外部 JSON 導入、批量導出
         ui.horizontal(|ui| {
             let can_back = !self.dev_browser_path.is_empty();
             if ui.add_enabled(can_back, Button::new("◀ 上一頁")).clicked() {
@@ -1045,7 +1086,7 @@ impl App {
                 self.dev_browser_path.clear();
             }
             ui.separator();
-            if ui.button("使用外部 JSON 篩選").clicked() {
+            if ui.button("導入外部 JSON 篩選").clicked() {
                 if let Some(file) = rfd::FileDialog::new()
                     .add_filter("JSON", &["json"])
                     .pick_file()

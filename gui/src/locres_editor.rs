@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use egui::*;
 use egui_extras::{TableBuilder, Column};
@@ -28,6 +29,9 @@ struct ConversionTask {
 
 pub struct LocresEditorState {
     pub current_path: Option<String>,
+    /// 載入的 locres 所屬的容器（pak / utoc）絕對路徑。和 current_path 一起
+    /// 組成 StagingArea.locres_edits 的鍵，避免同名跨容器互覆蓋。
+    pub current_pak: Option<PathBuf>,
     pub entries: Vec<LocresEntry>,
     pub search: String,
     pub show_modified_only: bool,
@@ -47,6 +51,7 @@ impl Default for LocresEditorState {
     fn default() -> Self {
         Self {
             current_path: None,
+            current_pak: None,
             entries: vec![],
             search: String::new(),
             show_modified_only: false,
@@ -66,6 +71,7 @@ impl Default for LocresEditorState {
 impl LocresEditorState {
     pub fn open_locres(&mut self, path: &str, pak: &std::path::Path, aes_key: &str) {
         self.current_path = Some(path.to_string());
+        self.current_pak = Some(pak.to_path_buf());
         self.entries.clear();
         self.is_loaded = false;
         self.status = "正在讀取 locres...".to_string();
@@ -181,9 +187,12 @@ impl LocresEditorState {
     }
 
     pub fn commit_to_staging(&self, staging: &mut StagingArea) {
-        if let Some(path) = &self.current_path {
+        if let (Some(path), Some(pak)) = (&self.current_path, &self.current_pak) {
             if self.entries.iter().any(|e| e.is_modified()) {
-                staging.locres_edits.insert(path.clone(), self.entries.clone());
+                staging.locres_edits.insert(
+                    (pak.clone(), path.clone()),
+                    self.entries.clone(),
+                );
             }
         }
     }

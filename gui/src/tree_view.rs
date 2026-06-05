@@ -42,7 +42,7 @@ pub fn show_tree(
     state: &mut TreeViewState,
     open_locres: &mut Option<(String, PathBuf)>,
     add_font: &mut Option<FontReplacement>,
-    batch_fonts: &mut Option<Vec<FontReplacement>>,
+    batch_fonts: &mut Option<(PathBuf, Vec<String>)>,
     cache: &FilterCache,
     navigate_to: &mut Option<Vec<String>>,
 ) {
@@ -110,7 +110,7 @@ fn show_nodes(
     cache: &FilterCache,
     open_locres: &mut Option<(String, PathBuf)>,
     add_font: &mut Option<FontReplacement>,
-    batch_fonts: &mut Option<Vec<FontReplacement>>,
+    batch_fonts: &mut Option<(PathBuf, Vec<String>)>,
     depth: usize,
     drag_rect: Option<Rect>,
     navigate_to: &mut Option<Vec<String>>,
@@ -226,7 +226,7 @@ fn show_context_menu(
     state: &TreeViewState,
     open_locres: &mut Option<(String, PathBuf)>,
     add_font: &mut Option<FontReplacement>,
-    batch_fonts: &mut Option<Vec<FontReplacement>>,
+    batch_fonts: &mut Option<(PathBuf, Vec<String>)>,
 ) {
     ui.label(RichText::new(entry.file_name()).strong());
     ui.label(RichText::new(&entry.path).small().color(Color32::GRAY));
@@ -243,11 +243,9 @@ fn show_context_menu(
                 .add_filter("字體檔案", &["ttf", "otf", "ufont"])
                 .pick_file()
             {
-                let replacements = multi_fonts
-                    .into_iter()
-                    .map(|pak_path| FontReplacement { pak_path, replacement: new_font.clone() })
-                    .collect();
-                *batch_fonts = Some(replacements);
+                // 只回傳「替換字體 + 內部路徑清單」，source_pak 由 app.rs 走 tree 解析
+                // （同一內部路徑可能對應多個 pak，必須由有 tree 上下文的呼叫端處理）。
+                *batch_fonts = Some((new_font, multi_fonts));
             }
             ui.close_menu();
         }
@@ -279,6 +277,7 @@ fn show_context_menu(
                     .pick_file()
                 {
                     *add_font = Some(FontReplacement {
+                        source_pak: entry.pak.clone(),
                         pak_path: entry.path.clone(),
                         replacement: new_font,
                     });

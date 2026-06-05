@@ -38,10 +38,9 @@ pub fn build_external(config: &ExternalPackConfig, log: &mut Vec<String>) -> Res
     fs::create_dir_all(&config.output_dir)
         .with_context(|| format!("無法建立輸出目錄: {}", config.output_dir.display()))?;
 
-    let suffix = "_External";
     let output_pak = config
         .output_dir
-        .join(format!("{}{}_P.pak", config.mod_name, suffix));
+        .join(format!("{}_P.pak", config.mod_name));
 
     match config.mode {
         BuildMode::Pak => {

@@ -59,23 +59,49 @@ impl ModBuilder {
     }
 
     fn apply_locres_edits(&self, work_dir: &Path, log: &mut Vec<String>) -> Result<()> {
-        for (pak_path, entries) in &self.staging.locres_edits {
+        // 由於 mod .pak 同一個內部路徑只能有一份檔案，多個 (source_pak, path)
+        // 共享相同 internal_path 時最終只會留下最後一筆。先做去重檢查並警示。
+        let mut seen: std::collections::HashMap<&str, &Path> = std::collections::HashMap::new();
+
+        for ((source_pak, pak_path), entries) in &self.staging.locres_edits {
             let modified_count = entries.iter().filter(|e| e.is_modified()).count();
             if modified_count == 0 {
                 continue;
             }
 
+            if let Some(prev) = seen.insert(pak_path.as_str(), source_pak.as_path()) {
+                log.push(format!(
+                    "  ⚠ 多個來源使用同一內部路徑 {}（{} 與 {}）→ 後處理的會覆蓋前者，建議分成多個 mod。",
+                    pak_path,
+                    prev.file_name().unwrap_or_default().to_string_lossy(),
+                    source_pak.file_name().unwrap_or_default().to_string_lossy(),
+                ));
+            }
+
             let extracted_path =
                 work_dir.join(pak_path.replace('/', std::path::MAIN_SEPARATOR_STR));
 
-            let source_pak = self
-                .extract_first_match(pak_path, &extracted_path)
-                .with_context(|| format!("找不到包含 {} 的 pak", pak_path))?;
+            // 優先從紀錄的來源 pak 抽；抽不到（pak 已搬走 / 名稱變了）才退回搜整堆 source_paks。
+            let aes = self.aes_key.as_deref();
+            let used_pak: PathBuf = if crate::locres::extract_locres_to_file(
+                source_pak, pak_path, &extracted_path, aes,
+            ).is_ok() {
+                source_pak.clone()
+            } else if let Some(fallback) = self.extract_first_match(pak_path, &extracted_path) {
+                log.push(format!(
+                    "  ⚠ 紀錄來源 {} 抽取失敗，退回從 {} 抽取。",
+                    source_pak.file_name().unwrap_or_default().to_string_lossy(),
+                    fallback.file_name().unwrap_or_default().to_string_lossy(),
+                ));
+                fallback.to_path_buf()
+            } else {
+                anyhow::bail!("找不到包含 {} 的 pak（嘗試了紀錄來源與全部 source_paks）", pak_path);
+            };
 
             log.push(format!(
                 "  處理: {} (來源: {})",
                 pak_path,
-                source_pak.file_name().unwrap_or_default().to_string_lossy()
+                used_pak.file_name().unwrap_or_default().to_string_lossy()
             ));
 
             write_locres(entries, &extracted_path, &extracted_path)?;
@@ -85,13 +111,30 @@ impl ModBuilder {
     }
 
     fn apply_font_replacements(&self, work_dir: &Path, log: &mut Vec<String>) -> Result<()> {
-        for FontReplacement { pak_path, replacement } in &self.staging.font_replacements {
+        // 與 locres 同樣：mod pak 內部路徑唯一，多個來源映射同一路徑時警示。
+        let mut seen: std::collections::HashMap<&str, &Path> = std::collections::HashMap::new();
+
+        for FontReplacement { source_pak, pak_path, replacement } in &self.staging.font_replacements {
+            if let Some(prev) = seen.insert(pak_path.as_str(), source_pak.as_path()) {
+                log.push(format!(
+                    "  ⚠ 多個字體來源使用同一內部路徑 {}（{} 與 {}）→ 後者會覆蓋前者。",
+                    pak_path,
+                    prev.file_name().unwrap_or_default().to_string_lossy(),
+                    source_pak.file_name().unwrap_or_default().to_string_lossy(),
+                ));
+            }
+
             let dest = work_dir.join(pak_path.replace('/', std::path::MAIN_SEPARATOR_STR));
             if let Some(parent) = dest.parent() {
                 fs::create_dir_all(parent)?;
             }
             fs::copy(replacement, &dest)?;
-            log.push(format!("  字體替換: {} <- {}", pak_path, replacement.display()));
+            log.push(format!(
+                "  字體替換: {} <- {} (源自 {})",
+                pak_path,
+                replacement.display(),
+                source_pak.file_name().unwrap_or_default().to_string_lossy(),
+            ));
         }
         Ok(())
     }

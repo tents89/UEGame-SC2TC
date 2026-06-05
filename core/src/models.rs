@@ -169,15 +169,22 @@ impl LocresEntry {
 
 #[derive(Clone, Debug)]
 pub struct FontReplacement {
+    /// 來源 pak / utoc 容器的絕對路徑。同名內部路徑跨容器時用來區分。
+    pub source_pak: PathBuf,
+    /// 容器內部路徑（如 `Game/Content/Fonts/X.ufont`）。
     pub pak_path: String,
     pub replacement: PathBuf,
 }
 
 // ── StagingArea ───────────────────────────────────────────────────────────────
 
+/// `(來源 pak/utoc 絕對路徑, 容器內部路徑)`。
+/// 用複合鍵避免「同名內部路徑跨多個 pak」被互相覆蓋。
+pub type LocresEditKey = (PathBuf, String);
+
 #[derive(Default, Clone, Debug)]
 pub struct StagingArea {
-    pub locres_edits: std::collections::HashMap<String, Vec<LocresEntry>>,
+    pub locres_edits: std::collections::HashMap<LocresEditKey, Vec<LocresEntry>>,
     pub font_replacements: Vec<FontReplacement>,
     pub extra_files: Vec<(String, PathBuf)>,
 }
