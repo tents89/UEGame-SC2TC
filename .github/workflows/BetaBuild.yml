@@ -1,0 +1,60 @@
+name: Build UE_MOD (Beta)
+
+# 僅限手動觸發
+on:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  BINARY_NAME: UE_L10nTool
+
+jobs:
+  build:
+    name: Build Windows Beta
+    runs-on: windows-latest
+    
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-pc-windows-msvc
+            os_name: windows
+            ext: .exe
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }} -p gui
+
+      - name: Prepare artifact
+        shell: bash
+        run: |
+          BIN="target/${{ matrix.target }}/release/${{ env.BINARY_NAME }}${{ matrix.ext }}"
+          ARTIFACT_DIR="artifact"
+          mkdir -p "$ARTIFACT_DIR"
+          cp "$BIN" "$ARTIFACT_DIR/"
+          
+          # 將根目錄的授權檔案複製到打包資料夾中
+          cp LICENSE-MIT LICENSE-APACHE "$ARTIFACT_DIR/"
+          
+          echo "ARTIFACT_DIR=$ARTIFACT_DIR" >> $GITHUB_ENV
+          echo "ARTIFACT_NAME=${{ env.BINARY_NAME }}-${{ matrix.os_name }}-beta" >> $GITHUB_ENV
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          path: artifact/
+          retention-days: 7
