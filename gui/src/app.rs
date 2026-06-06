@@ -1242,7 +1242,7 @@ impl App {
 
         let cache_active = self.filter_cache.is_active();
         let mut enter_dir: Option<String> = None;
-        let mut toggle_select: Option<String> = None;
+        let mut toggle_select: Option<(String, bool)> = None;
 
         ScrollArea::both().show(ui, |ui| {
             let mut shown = 0usize;
@@ -1278,7 +1278,9 @@ impl App {
                         let selected = self.tree_view.multi_selected.contains(&entry.path);
                         let resp = ui.selectable_label(selected, label);
                         if resp.clicked() {
-                            toggle_select = Some(entry.path.clone());
+                            // 常規行為：點擊單選；Ctrl/Shift 點擊才是多選 toggle。
+                            let multi = ui.input(|i| i.modifiers.ctrl || i.modifiers.shift);
+                            toggle_select = Some((entry.path.clone(), multi));
                         }
                         let pak_name = entry.pak.file_name().unwrap_or_default().to_string_lossy();
                         let entry_path = entry.path.clone();
@@ -1308,9 +1310,9 @@ impl App {
         if let Some(name) = enter_dir {
             self.dev_browser_path.push(name);
         }
-        if let Some(p) = toggle_select {
-            // dev mode 下點擊即 toggle 多選（保留 selected_path 顯示）
-            self.tree_view.select(p, true);
+        if let Some((p, multi)) = toggle_select {
+            // 一般點擊 → 單選；Ctrl/Shift → toggle 多選
+            self.tree_view.select(p, multi);
         }
         for p in to_insert {
             self.tree_view.multi_selected.insert(p);

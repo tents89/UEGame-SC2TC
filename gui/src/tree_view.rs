@@ -63,21 +63,28 @@ pub fn show_tree(
         }
     }
 
+    ui.label(
+        RichText::new("提示：點擊=單選；Ctrl+點擊=多選 toggle；Shift+拖曳=框選")
+            .small()
+            .color(Color32::GRAY),
+    );
+
     let interact_rect = ui.available_rect_before_wrap();
     let response = ui.interact(interact_rect, ui.id().with("tree_drag"), Sense::drag());
 
-    // 只在「左鍵」拖曳時才啟動框選，右鍵（context menu）不應清除已選取的範圍
+    // Shift 才啟動框選；右鍵不影響選取。
     let is_right_click = ui.input(|i| i.pointer.button_pressed(egui::PointerButton::Secondary));
+    let shift_held = ui.input(|i| i.modifiers.shift);
 
-    if response.drag_started() && response.interact_pointer_pos().is_some() && !is_right_click {
+    if shift_held
+        && response.drag_started()
+        && response.interact_pointer_pos().is_some()
+        && !is_right_click
+    {
         state.drag_start = response.interact_pointer_pos();
-        if !ui.input(|i| i.modifiers.ctrl || i.modifiers.shift) {
-            state.multi_selected.clear();
-            state.selected_path = None;
-        }
     }
 
-    if response.dragged() {
+    if state.drag_start.is_some() && response.dragged() {
         state.drag_current = response.interact_pointer_pos();
     }
 
@@ -86,7 +93,6 @@ pub fn show_tree(
         state.drag_current = None;
     }
 
-    // 繪製拖曳框
     let drag_rect = if let (Some(start), Some(curr)) = (state.drag_start, state.drag_current) {
         let rect = Rect::from_two_pos(start, curr);
         ui.painter().rect_filled(rect, 0.0, Color32::from_rgba_unmultiplied(100, 150, 255, 30));
@@ -147,7 +153,6 @@ fn show_nodes(
                     } else {
                         state.expanded.insert(full_path.clone());
                     }
-                    // 同步穿梭模式：點到資料夾就把右側「當下目錄」切到這層。
                     *navigate_to = Some(
                         full_path.split('/').filter(|s| !s.is_empty()).map(str::to_string).collect()
                     );
@@ -195,9 +200,9 @@ fn show_nodes(
                 let response = response.inner;
 
                 if response.clicked() {
+                    // Ctrl/Shift = toggle，否則單選。
                     let multi = ui.input(|i| i.modifiers.ctrl || i.modifiers.shift);
                     state.select(entry.path.clone(), multi);
-                    // 同步穿梭模式：點到檔案時，把當下目錄切到該檔所在資料夾。
                     if !multi {
                         *navigate_to = Some(
                             parent_path.split('/').filter(|s| !s.is_empty())
@@ -243,8 +248,7 @@ fn show_context_menu(
                 .add_filter("字體檔案", &["ttf", "otf", "ufont"])
                 .pick_file()
             {
-                // 只回傳「替換字體 + 內部路徑清單」，source_pak 由 app.rs 走 tree 解析
-                // （同一內部路徑可能對應多個 pak，必須由有 tree 上下文的呼叫端處理）。
+                // source_pak 由 app.rs 走 tree 解析（同名跨 pak 需展開）。
                 *batch_fonts = Some((new_font, multi_fonts));
             }
             ui.close_menu();
